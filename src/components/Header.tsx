@@ -1,0 +1,127 @@
+import React from 'react';
+import { 
+  Building2, 
+  Activity, 
+  FileText, 
+  Scale, 
+  UserCheck, 
+  GitCompare, 
+  MessageSquare, 
+  Play, 
+  Clock, 
+  Dumbbell,
+  Sparkles
+} from 'lucide-react';
+import { SchedulerState } from '../types';
+
+interface HeaderProps {
+  activeTab: string;
+  setActiveTab: (tab: string) => void;
+  scheduler: SchedulerState;
+  onTriggerScheduler: () => void;
+  pendingReviewCount: number;
+  isTriggering: boolean;
+}
+
+export const Header: React.FC<HeaderProps> = ({
+  activeTab,
+  setActiveTab,
+  scheduler,
+  onTriggerScheduler,
+  pendingReviewCount,
+  isTriggering
+}) => {
+  const tabs = [
+    { id: 'dashboard', label: 'Painel Geral', icon: Activity },
+    { id: 'sources', label: 'Fontes & Conectores', icon: Building2, badge: '28 Mun. + Sistema S' },
+    { id: 'editais', label: 'Editais & OCR', icon: FileText },
+    { id: 'findings', label: 'Achados & Legislação', icon: Scale },
+    { id: 'tech-spec-ai', label: 'Pesquisa Técnica IA', icon: Sparkles, badge: 'Item 4.3' },
+    { id: 'review', label: 'Revisão Humana', icon: UserCheck, badge: pendingReviewCount > 0 ? `${pendingReviewCount} Pendente${pendingReviewCount > 1 ? 's' : ''}` : undefined, highlight: pendingReviewCount > 0 },
+    { id: 'diff', label: 'Retificações & Diff', icon: GitCompare },
+    { id: 'whatsapp', label: 'Notificações WhatsApp', icon: MessageSquare },
+    { id: 'ncm-config', label: 'Filtro NCM', icon: Dumbbell }
+  ];
+
+  return (
+    <header className="bg-slate-900 text-white border-b border-slate-800 sticky top-0 z-40 shadow-xs">
+      {/* Top Navbar */}
+      <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-12 flex items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="w-8 h-8 bg-blue-600 rounded flex items-center justify-center font-bold text-sm text-white shadow-xs">
+            MEM
+          </div>
+          <div>
+            <div className="flex items-center gap-2">
+              <h1 className="font-bold text-sm sm:text-base tracking-tight text-white flex items-center">
+                Monitor de Editais Municipais
+                <span className="text-slate-400 font-normal ml-2 text-xs hidden sm:inline">v1.1 PRD-MVP</span>
+              </h1>
+              <span className="text-[10px] px-1.5 py-0.5 rounded bg-blue-900/60 text-blue-300 border border-blue-700/50 font-bold uppercase tracking-wider hidden md:inline">
+                NCM 9506.91
+              </span>
+            </div>
+          </div>
+        </div>
+
+        {/* Right Status & Scheduler Quick Actions */}
+        <div className="flex items-center gap-3 sm:gap-5 text-xs">
+          <div className="hidden md:flex items-center gap-2 text-slate-300">
+            <span className={`w-2 h-2 rounded-full ${scheduler.isRunning ? 'bg-green-400 animate-pulse' : 'bg-amber-400'}`}></span>
+            <span className="text-[11px]">Scheduler: <strong className="text-green-400">Operacional</strong></span>
+          </div>
+
+          <div className="hidden lg:flex items-center gap-2 text-slate-400 text-[11px]">
+            <span>17 de Agosto, 2026</span>
+          </div>
+
+          <button
+            onClick={onTriggerScheduler}
+            disabled={isTriggering}
+            className="flex items-center gap-1.5 px-2.5 py-1 text-[11px] font-bold rounded bg-blue-600 hover:bg-blue-500 text-white transition-colors disabled:opacity-50 shadow-xs cursor-pointer"
+            title="Executar varredura em tempo real em todas as 28 prefeituras e portais"
+          >
+            <Play className={`w-3 h-3 ${isTriggering ? 'animate-spin' : ''}`} />
+            <span>{isTriggering ? 'Coletando...' : 'Executar Coleta'}</span>
+          </button>
+
+          <div className="w-7 h-7 bg-slate-700 rounded-full border border-slate-600 flex items-center justify-center text-xs font-bold text-slate-200 shadow-xs" title="Dra. Camila Vargas (OAB/RS 88.412)">
+            JD
+          </div>
+        </div>
+      </div>
+
+      {/* Navigation Tabs */}
+      <nav className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex overflow-x-auto no-scrollbar gap-1 border-t border-slate-800 bg-slate-900/95">
+        {tabs.map(tab => {
+          const Icon = tab.icon;
+          const isActive = activeTab === tab.id;
+          return (
+            <button
+              key={tab.id}
+              onClick={() => setActiveTab(tab.id)}
+              className={`flex items-center gap-2 px-3 py-2 text-xs font-medium border-b-2 whitespace-nowrap transition-colors cursor-pointer ${
+                isActive
+                  ? 'border-blue-500 text-white bg-slate-800 font-semibold'
+                  : 'border-transparent text-slate-400 hover:text-slate-200 hover:bg-slate-800/50'
+              }`}
+            >
+              <Icon className="w-3.5 h-3.5" />
+              <span>{tab.label}</span>
+              {tab.badge && (
+                <span className={`text-[10px] px-1.5 py-0.2 rounded font-bold tracking-tight ${
+                  tab.highlight 
+                    ? 'bg-amber-500 text-slate-950 animate-pulse' 
+                    : 'bg-slate-800 text-slate-400 border border-slate-700'
+                }`}>
+                  {tab.badge}
+                </span>
+              )}
+            </button>
+          );
+        })}
+      </nav>
+    </header>
+  );
+};
+
