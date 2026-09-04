@@ -158,7 +158,7 @@ async function runSescPuppeteerScraper() {
         totalCollected: newInsertions,
         status: 'ACTIVE'
       })
-      .where(postgres`id = ${sourceId}`);
+      .where(eq(schema.sources.id, sourceId));
   } catch (e) {
     // ignorar
   }

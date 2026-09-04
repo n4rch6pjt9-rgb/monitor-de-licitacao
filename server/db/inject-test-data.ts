@@ -3,6 +3,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../db/schema';
 import crypto from 'crypto';
+import { eq } from 'drizzle-orm';
 import { encryptSecret } from '../lib/crypto';
 
 async function injectRealisticTest() {
@@ -118,11 +119,11 @@ async function injectRealisticTest() {
     }
   };
 
-  const existingConfigs = await db.select().from(schema.tenantConfigs).where(postgres`tenant_id = ${tenantId}`);
+  const existingConfigs = await db.select().from(schema.tenantConfigs).where(eq(schema.tenantConfigs.tenantId, tenantId));
   if (existingConfigs.length > 0) {
     await db.update(schema.tenantConfigs)
       .set({ pncpConfig: tenantConfigData.pncpConfig })
-      .where(postgres`tenant_id = ${tenantId}`);
+      .where(eq(schema.tenantConfigs.tenantId, tenantId));
     console.log(' ✅ Configs atualizadas.');
   } else {
     await db.insert(schema.tenantConfigs).values(tenantConfigData);

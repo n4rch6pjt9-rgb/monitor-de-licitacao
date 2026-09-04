@@ -7,6 +7,7 @@ import 'dotenv/config';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../db/schema';
+import { eq } from 'drizzle-orm';
 import * as cheerio from 'cheerio';
 
 const URL_SESC_SP_MURAL = 'https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx';
@@ -141,7 +142,7 @@ async function runSescScraper() {
         totalCollected: newInsertions,
         status: 'ACTIVE'
       })
-      .where(postgres`id = ${sourceId}`);
+      .where(eq(schema.sources.id, sourceId));
   } catch (e) {
     // ignorar
   }

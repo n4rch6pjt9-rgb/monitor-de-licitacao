@@ -105,6 +105,28 @@ async function runCollector() {
 
   let newInsertions = 0;
 
+  // Pré-carrega o certificado e configura o dispatcher global do PNCP
+  // (Lê o disco uma única vez antes dos loops, ao invés de ler por página)
+  let dispatcher: Agent | undefined;
+  const tenantWithCert = tenantRules.find(r => r.pncpConfig?.isActive && r.pncpConfig?.certificatePath);
+  
+  if (tenantWithCert && tenantWithCert.pncpConfig) {
+    try {
+      console.log(`  🔒 Carregando certificado do tenant ${tenantWithCert.tenantId} para coleta global...`);
+      const certData = fs.readFileSync(tenantWithCert.pncpConfig.certificatePath!);
+      dispatcher = new Agent({
+        connect: {
+          pfx: certData,
+          passphrase: decryptSecret(tenantWithCert.pncpConfig.certificatePassword || ''),
+          rejectUnauthorized: true, // Garante validação da cadeia do governo
+        }
+      });
+      console.log(`  ✅ Certificado mTLS pronto.`);
+    } catch (certErr: any) {
+      console.log(`  ⚠️ Erro ao ler certificado mTLS do tenant ${tenantWithCert.tenantId}: ${certErr.message}`);
+    }
+  }
+
   for (const modalidade of MODALIDADES) {
     console.log(`\n🔍 Buscando modalidade ${modalidade}...`);
     let page = 1;
@@ -119,27 +141,8 @@ async function runCollector() {
       url.searchParams.set('pagina', String(page));
 
       try {
-        let dispatcher: Agent | undefined;
-        // Pega a config do primeiro tenant ativo (no mundo real, o request
-        // ao PNCP que lista os itens para TODOS os tenants pode ser feito
-        // publicamente, ou precisaremos fazer um request por tenant se for restrito.
-        // Assumindo que a pesquisa é global, vamos usar o cert do tenant 1 se houver,
-        // ou se houvesse múltiplos, teríamos que separar a coleta.
-        const tenantWithCert = tenantRules.find(r => r.pncpConfig?.isActive && r.pncpConfig?.certificatePath);
-        if (tenantWithCert && tenantWithCert.pncpConfig) {
-          try {
-            const certData = fs.readFileSync(tenantWithCert.pncpConfig.certificatePath!);
-            dispatcher = new Agent({
-              connect: {
-                pfx: certData,
-                passphrase: decryptSecret(tenantWithCert.pncpConfig.certificatePassword || '')
-              }
-            });
-            console.log(`  🔒 Usando certificado do tenant ${tenantWithCert.tenantId} para coleta global...`);
-          } catch (certErr: any) {
-            console.log(`  ⚠️ Erro ao ler certificado mTLS do tenant ${tenantWithCert.tenantId}: ${certErr.message}`);
-          }
-        }
+        // O Agent (dispatcher) já foi instanciado fora do loop principal,
+        // garantindo que não vamos ler o arquivo de certificado do disco a cada página.
 
         const res = await undiciFetch(url.toString(), {
           headers: { 'Accept': 'application/json', 'User-Agent': 'Monitor-Editais-Worker-V2/1.0' },
@@ -229,7 +232,7 @@ async function runCollector() {
         totalCollected: newInsertions,
         status: 'ACTIVE'
       })
-      .where(postgres`id = ${sourceId}`);
+      .where(eq(schema.sources.id, sourceId));
   } catch (e) {
     // silently fail metrics update
   }
