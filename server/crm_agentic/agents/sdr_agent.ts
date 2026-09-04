@@ -1,10 +1,6 @@
-import { generateText, tool, jsonSchema } from 'ai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
+import { tool, jsonSchema } from 'ai';
 import { crmTools } from '../tools/tool_registry';
-
-const google = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+import { generateTextWithFallback } from '../../lib/ai';
 
 const SYSTEM_INSTRUCTION = `Você é um Agente SDR (Sales Development Representative) especialista em licitações públicas operando dentro de um CRM B2B Autônomo.
 Seu objetivo: Analisar o resumo do edital recém aprovado e decidir o próximo passo no funil de vendas.
@@ -30,8 +26,7 @@ const tools = Object.fromEntries(
 export class SDRAgent {
   async processObservation(observation: string) {
     console.log('[SDR Agent] Thinking...');
-    const { toolCalls } = await generateText({
-      model: google('gemini-2.5-flash'),
+    const { toolCalls } = await generateTextWithFallback({
       system: SYSTEM_INSTRUCTION,
       prompt: observation,
       tools

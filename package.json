@@ -20,6 +20,7 @@
   },
   "dependencies": {
     "@ai-sdk/google": "^4.0.63",
+    "@ai-sdk/groq": "^4.0.37",
     "@google/genai": "^2.4.0",
     "@neon/env": "^1.2.0",
     "@neondatabase/serverless": "^1.1.0",
@@ -40,6 +41,7 @@
     "puppeteer": "^25.10.0",
     "react": "^19.0.1",
     "react-dom": "^19.0.1",
+    "undici": "^8.10.2",
     "vite": "^6.2.3"
   },
   "devDependencies": {

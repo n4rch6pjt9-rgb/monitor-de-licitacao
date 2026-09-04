@@ -1,10 +1,5 @@
-import { generateText } from 'ai';
-import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { calculateWinRate, calculateConversionRate, analyzePipelineHygiene } from '../tools/revops_tools';
-
-const google = createGoogleGenerativeAI({
-  apiKey: process.env.GEMINI_API_KEY,
-});
+import { generateTextWithFallback } from '../../lib/ai';
 
 export class RevOpsAgent {
   /**
@@ -47,8 +42,7 @@ Devolva apenas o briefing em formato Markdown (sem blocos de código extra).
     `.trim();
 
     try {
-      const { text } = await generateText({
-        model: google('gemini-2.5-flash'),
+      const { text } = await generateTextWithFallback({
         system: "Você é um Agente RevOps altamente analítico. Conheça seus números, compreenda seus números.",
         prompt: prompt,
         maxOutputTokens: 800,
