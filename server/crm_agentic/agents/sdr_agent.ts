@@ -1,18 +1,12 @@
-import { GoogleGenerativeAI } from '@google/generative-ai';
+import { generateText, tool, jsonSchema } from 'ai';
+import { createGoogleGenerativeAI } from '@ai-sdk/google';
 import { crmTools } from '../tools/tool_registry';
 
-const genAI = new GoogleGenerativeAI(process.env.GEMINI_API_KEY!);
-const model = genAI.getGenerativeModel({ 
-  model: 'gemini-2.5-flash',
-  tools: [{ functionDeclarations: crmTools as any }]
+const google = createGoogleGenerativeAI({
+  apiKey: process.env.GEMINI_API_KEY,
 });
 
-export class SDRAgent {
-  private chatSession: any;
-
-  constructor() {
-    this.chatSession = model.startChat({
-      systemInstruction: `Você é um Agente SDR (Sales Development Representative) especialista em licitações públicas operando dentro de um CRM B2B Autônomo.
+const SYSTEM_INSTRUCTION = `Você é um Agente SDR (Sales Development Representative) especialista em licitações públicas operando dentro de um CRM B2B Autônomo.
 Seu objetivo: Analisar o resumo do edital recém aprovado e decidir o próximo passo no funil de vendas.
 
 Instruções:
@@ -21,19 +15,32 @@ Instruções:
 3. Se o objeto do edital não parecer viável (ex: valores incompatíveis, atestados que o tenant não tem), marque como LOST usando set_status e deixe o motivo explícito na nota.
 4. Se for promissor, mova para "proposal" (move_stage) e deixe uma nota de recomendação estratégica para os humanos prepararem a documentação.
 
-Respire fundo, analise os dados fornecidos pelo ambiente e invoque a ferramenta correta.`
-    });
-  }
+Respire fundo, analise os dados fornecidos pelo ambiente e invoque a ferramenta correta.`;
 
+const tools = Object.fromEntries(
+  crmTools.map(t => [
+    t.name,
+    tool({
+      description: t.description,
+      inputSchema: jsonSchema(t.parameters as any)
+    })
+  ])
+);
+
+export class SDRAgent {
   async processObservation(observation: string) {
     console.log('[SDR Agent] Thinking...');
-    const result = await this.chatSession.sendMessage(observation);
-    const functionCalls = result.response.functionCalls();
-    
-    if (functionCalls && functionCalls.length > 0) {
-      return functionCalls;
+    const { toolCalls } = await generateText({
+      model: google('gemini-2.5-flash'),
+      system: SYSTEM_INSTRUCTION,
+      prompt: observation,
+      tools
+    });
+
+    if (toolCalls && toolCalls.length > 0) {
+      return toolCalls.map(call => ({ name: call.toolName, args: call.input }));
     }
-    
+
     // Fallback se não usar ferramenta
     return null;
   }

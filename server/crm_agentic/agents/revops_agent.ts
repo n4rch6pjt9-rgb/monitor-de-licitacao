@@ -51,7 +51,7 @@ Devolva apenas o briefing em formato Markdown (sem blocos de código extra).
         model: google('gemini-2.5-flash'),
         system: "Você é um Agente RevOps altamente analítico. Conheça seus números, compreenda seus números.",
         prompt: prompt,
-        maxTokens: 800,
+        maxOutputTokens: 800,
         temperature: 0.4
       });
 
@@ -63,9 +63,25 @@ Devolva apenas o briefing em formato Markdown (sem blocos de código extra).
         },
         aiBriefing: text
       };
-    } catch (error) {
+    } catch (error: any) {
       console.error('[RevOpsAgent Error]:', error);
-      throw error;
+      
+      // Fallback heurístico em caso de falha de cota/rate limit
+      const fallbackText = `### Resumo Estratégico (Fallback Heurístico)
+Devido a uma instabilidade temporária na API de IA, geramos este resumo baseado em regras heurísticas:
+
+- **Win Rate:** ${winRateData.winRate}. ${parseFloat(winRateData.winRate) < 15 ? 'Baixo. Precisamos revisar a qualificação.' : 'Saudável. Focar em volume.'}
+- **Coorte (3 meses atrás):** ${cohortData.cohortSize} negócios criados, ${cohortData.wonFromCohort} convertidos (${cohortData.conversionRate}).
+- **Higiene do Funil:** Temos ${hygieneData.staleCount} negócios estagnados há mais de 30 dias. Recomendação: Faça uma limpa no funil.`;
+
+      return {
+        metrics: {
+          winRateData,
+          cohortData,
+          hygieneData
+        },
+        aiBriefing: fallbackText
+      };
     }
   }
 }
