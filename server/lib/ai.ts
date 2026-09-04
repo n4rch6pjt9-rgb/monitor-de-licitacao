@@ -1,19 +1,19 @@
 import { generateText, type ToolSet } from 'ai';
 import { createGoogleGenerativeAI } from '@ai-sdk/google';
-import { createGroq } from '@ai-sdk/groq';
+import { createXai } from '@ai-sdk/xai';
 
 const google = createGoogleGenerativeAI({
   apiKey: process.env.GEMINI_API_KEY,
 });
 
-const groq = createGroq({
-  apiKey: process.env.GROQ_API_KEY,
+const xai = createXai({
+  apiKey: process.env.XAI_API_KEY,
 });
 
 const GEMINI_MODEL = 'gemini-2.5-flash';
-// Groq: modelo com suporte a tool-calling, usado como fallback quando o
-// Gemini estoura quota/rate-limit (free tier: 5 req/min, 20/dia).
-const GROQ_FALLBACK_MODEL = 'llama-3.3-70b-versatile';
+// xAI: usado como fallback quando o Gemini estoura quota/rate-limit
+// (free tier: 5 req/min, 20/dia).
+const XAI_FALLBACK_MODEL = 'grok-4.6';
 
 interface GenerateWithFallbackOptions {
   system: string;
@@ -25,7 +25,7 @@ interface GenerateWithFallbackOptions {
 
 /**
  * Chama o Gemini primeiro; se falhar (quota, rate-limit, indisponibilidade),
- * tenta de novo com Groq usando os mesmos parâmetros, antes de propagar o
+ * tenta de novo com xAI usando os mesmos parâmetros, antes de propagar o
  * erro pro fallback heurístico de cada agente.
  */
 export async function generateTextWithFallback({ system, prompt, maxOutputTokens, temperature, tools }: GenerateWithFallbackOptions) {
@@ -39,21 +39,21 @@ export async function generateTextWithFallback({ system, prompt, maxOutputTokens
       tools,
     });
   } catch (geminiError: any) {
-    console.error('[AI Fallback] Gemini falhou, tentando Groq:', geminiError.message);
+    console.error('[AI Fallback] Gemini falhou, tentando xAI:', geminiError.message);
     try {
       const result = await generateText({
-        model: groq(GROQ_FALLBACK_MODEL),
+        model: xai.chat(XAI_FALLBACK_MODEL),
         system,
         prompt,
         maxOutputTokens,
         temperature,
         tools,
       });
-      console.log('[AI Fallback] Groq respondeu com sucesso.');
+      console.log('[AI Fallback] xAI respondeu com sucesso.');
       return result;
-    } catch (groqError: any) {
-      console.error('[AI Fallback] Groq também falhou:', groqError.message);
-      throw groqError;
+    } catch (xaiError: any) {
+      console.error('[AI Fallback] xAI também falhou:', xaiError.message);
+      throw xaiError;
     }
   }
 }
