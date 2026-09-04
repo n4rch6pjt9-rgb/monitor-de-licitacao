@@ -1,6 +1,5 @@
 import express, { Request, Response } from 'express';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { analyzeEditalTextWithAI, analyzeTechnicalSpecificationRestrictedAI } from './server/gemini';
@@ -11,9 +10,6 @@ import { eq, ilike, or, desc, sql } from 'drizzle-orm';
 import { crmRouter } from './server/routes/crm.js';
 
 dotenv.config();
-
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
 
 // Conexão com o banco via Drizzle
 let notifications: WhatsAppNotification[] = [];
