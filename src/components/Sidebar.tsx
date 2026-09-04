@@ -34,7 +34,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, pendi
     { id: 'review', label: 'Revisão', icon: UserCheck, badge: pendingReviewCount > 0 ? String(pendingReviewCount) : undefined, highlight: pendingReviewCount > 0 },
     { id: 'diff', label: 'Diffs', icon: GitCompare },
     { id: 'whatsapp', label: 'WhatsApp', icon: MessageSquare },
-    { id: 'ncm-config', label: 'Filtro NCM', icon: Dumbbell }
+    { id: 'ncm-config', label: 'Configurações Globais', icon: Dumbbell }
   ];
 
   return (
@@ -92,7 +92,7 @@ export const Sidebar: React.FC<SidebarProps> = ({ activeTab, setActiveTab, pendi
         <div className="p-4 border-t border-slate-800">
            <div className="text-[10px] text-slate-500 uppercase font-bold tracking-wider mb-2">Workspace</div>
            <div className="flex items-center gap-3">
-              <div className="w-8 h-8 rounded bg-gradient-to-tr from-blue-600 to-blue-400 flex items-center justify-center text-white font-bold text-xs shadow-lg">T1</div>
+              <div className="w-8 h-8 rounded bg-linear-to-tr from-blue-600 to-blue-400 flex items-center justify-center text-white font-bold text-xs shadow-lg">T1</div>
               <div className="flex-1 truncate">
                  <div className="text-sm font-bold text-slate-200 truncate">Vectra Cargo</div>
                  <div className="text-[10px] text-slate-400">NCM 9506.91</div>

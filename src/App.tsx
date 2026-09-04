@@ -10,7 +10,7 @@ import { TechnicalSpecAIView } from './components/TechnicalSpecAIView';
 import { ReviewWorkflowView } from './components/ReviewWorkflowView';
 import { RetificationDiffView } from './components/RetificationDiffView';
 import { WhatsAppNotificationsView } from './components/WhatsAppNotificationsView';
-import { NCMConfigView } from './components/NCMConfigView';
+import { SettingsView } from './components/SettingsView';
 
 import { 
   Source, 
@@ -422,7 +422,7 @@ export default function App() {
             )}
 
             {activeTab === 'ncm-config' && (
-              <NCMConfigView />
+              <SettingsView />
             )}
           </main>
 
