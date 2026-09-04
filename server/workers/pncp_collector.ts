@@ -9,6 +9,8 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
+import fs from 'fs';
+import { Agent, fetch as undiciFetch } from 'undici';
 
 const BASE_URL = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
@@ -34,6 +36,11 @@ interface TenantRule {
   tenantId: number;
   keywords: string[];
   ncms: string[];
+  pncpConfig?: {
+    certificatePath?: string;
+    certificatePassword?: string;
+    isActive?: boolean;
+  };
 }
 
 async function runCollector() {
@@ -64,15 +71,19 @@ async function runCollector() {
     // Busca Keywords
     const configs = await db.select().from(schema.tenantConfigs)
       .where(eq(schema.tenantConfigs.tenantId, tenant.id));
-    let keywords: string[] = [];
-    if (configs.length > 0 && configs[0].searchKeywords) {
-      keywords = configs[0].searchKeywords.map((k: string) => k.toLowerCase().trim());
+    let pncpConfig;
+    if (configs.length > 0) {
+      if (configs[0].searchKeywords) {
+        keywords = configs[0].searchKeywords.map((k: string) => k.toLowerCase().trim());
+      }
+      pncpConfig = configs[0].pncpConfig;
     }
 
     tenantRules.push({
       tenantId: tenant.id,
       keywords,
-      ncms: activeNcms
+      ncms: activeNcms,
+      pncpConfig
     });
   }
 
@@ -106,9 +117,31 @@ async function runCollector() {
       url.searchParams.set('pagina', String(page));
 
       try {
-        const res = await fetch(url.toString(), {
+        let dispatcher: Agent | undefined;
+        // Pega a config do primeiro tenant ativo (no mundo real, o request
+        // ao PNCP que lista os itens para TODOS os tenants pode ser feito
+        // publicamente, ou precisaremos fazer um request por tenant se for restrito.
+        // Assumindo que a pesquisa é global, vamos usar o cert do tenant 1 se houver,
+        // ou se houvesse múltiplos, teríamos que separar a coleta.
+        const tenantWithCert = tenantRules.find(r => r.pncpConfig?.isActive && r.pncpConfig?.certificatePath);
+        if (tenantWithCert && tenantWithCert.pncpConfig) {
+          try {
+            const certData = fs.readFileSync(tenantWithCert.pncpConfig.certificatePath!);
+            dispatcher = new Agent({
+              connect: {
+                pfx: certData,
+                passphrase: tenantWithCert.pncpConfig.certificatePassword || ''
+              }
+            });
+            console.log(`  🔒 Usando certificado do tenant ${tenantWithCert.tenantId} para coleta global...`);
+          } catch (certErr: any) {
+            console.log(`  ⚠️ Erro ao ler certificado mTLS do tenant ${tenantWithCert.tenantId}: ${certErr.message}`);
+          }
+        }
+
+        const res = await undiciFetch(url.toString(), {
           headers: { 'Accept': 'application/json', 'User-Agent': 'Monitor-Editais-Worker-V2/1.0' },
-          signal: AbortSignal.timeout(15000),
+          dispatcher: dispatcher,
         });
 
         if (!res.ok) {
@@ -116,7 +149,7 @@ async function runCollector() {
           break;
         }
 
-        const data = await res.json();
+        const data: any = await res.json();
         const items = data?.data || [];
         
         if (items.length === 0) {
