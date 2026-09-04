@@ -1,0 +1,45 @@
+# =============================================================================
+# Monitor de Licitações — Produção (consolidado na VPS gymsite-api / Hetzner)
+# =============================================================================
+# Este arquivo é um compose SEPARADO do docker-compose.prod.yml do GymSite —
+# de propósito, pra não arriscar quebrar o app existente. Ele se conecta na
+# MESMA rede Docker "gymsite" (criada pelo compose do GymSite) como external,
+# só pra ficar visível ao cloudflared que já roda lá. Não expõe nenhuma porta
+# no host: o cloudflared entrega o tráfego via alias de rede "licitacoes-api".
+#
+# Deploy inicial na VPS (rodar uma vez, dentro de /opt/licitacoes):
+#   docker compose -f docker-compose.licitacoes.yml up -d
+#
+# Deploy de atualização (o workflow do GitHub Actions faz isso via SSH):
+#   docker compose -f docker-compose.licitacoes.yml pull
+#   docker compose -f docker-compose.licitacoes.yml up -d
+#
+# Pré-requisitos na VPS antes do primeiro up:
+#   1. mkdir -p /opt/licitacoes && cd /opt/licitacoes
+#   2. Criar .env.production com GEMINI_API_KEY, DATABASE_URL (Neon), APP_URL
+#   3. Ver DEPLOY_NOTES.md para o passo do cloudflared (rota de hostname).
+# =============================================================================
+services:
+  licitacoes:
+    image: ${GHCR_IMAGE:-ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao:latest}
+    env_file: .env.production
+    networks:
+      gymsite:
+        aliases:
+          - licitacoes-api
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:3000/api/health', r => process.exit(r.statusCode===200?0:1)).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 8s
+      retries: 5
+      start_period: 20s
+    # Limite de memória de segurança: evita que um pico (ex: futuro worker com
+    # Puppeteer) derrube outros containers na mesma VPS por OOM.
+    # (mem_limit funciona com "docker compose up" direto; "deploy.resources"
+    # só é respeitado em modo Swarm, por isso não usamos aquele aqui.)
+    mem_limit: 1g
+
+networks:
+  gymsite:
+    external: true

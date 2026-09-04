@@ -1,34 +1,83 @@
-name: Deploy to Hetzner
+name: Deploy Monitor de Licitações
 
 on:
   push:
-    branches: [ "main" ]
-  workflow_dispatch:
+    branches: [main]
+
+# Evita dois deploys concorrentes pisando um no outro
+concurrency:
+  group: deploy-licitacoes
+  cancel-in-progress: false
+
+env:
+  IMAGE: ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao
 
 jobs:
-  deploy:
+  build-and-push:
     runs-on: ubuntu-latest
-
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image_tag: ${{ steps.meta.outputs.tag }}
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v3
+      - uses: actions/checkout@v4
 
-      - name: Deploy to VPS via SSH
-        uses: appleboy/ssh-action@master
+      - name: Definir tag da imagem (sha curto)
+        id: meta
+        run: echo "tag=$(echo ${GITHUB_SHA} | cut -c1-7)" >> "$GITHUB_OUTPUT"
+
+      - name: Login no GHCR
+        uses: docker/login-action@v3
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build e push da imagem
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.IMAGE }}:latest
+            ${{ env.IMAGE }}:${{ steps.meta.outputs.tag }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy via SSH na VPS (Hetzner)
+        uses: appleboy/ssh-action@v1.0.3
+        with:
+          host: ${{ secrets.HETZNER_HOST }}
+          username: ${{ secrets.HETZNER_USER }}
+          key: ${{ secrets.HETZNER_SSH_KEY }}
           script: |
-            # Acessar a pasta do projeto (ajuste o caminho se necessário)
-            cd /opt/monitor-de-licitacao || exit
-            
-            # Garantir que a main está atualizada
-            git fetch origin
-            git reset --hard origin/main
-            
-            # Refazer o build e reiniciar os containers em background com downtime mínimo
-            docker compose -f docker-compose.production.yml up -d --build
-            
-            # Limpar imagens antigas (prune) para não lotar o disco da Hetzner
-            docker image prune -f
+            set -e
+            cd /opt/licitacoes
+            export GHCR_IMAGE=${{ env.IMAGE }}:${{ needs.build-and-push.outputs.image_tag }}
+            echo "GHCR_IMAGE=${GHCR_IMAGE}" > .deploy_image
+            docker compose -f docker-compose.licitacoes.yml pull
+            docker compose -f docker-compose.licitacoes.yml up -d
+            # Aguarda o healthcheck do container ficar "healthy" (até ~90s)
+            for i in $(seq 1 18); do
+              STATUS=$(docker inspect -f '{{.State.Health.Status}}' licitacoes-licitacoes-1 2>/dev/null || echo "starting")
+              if [ "$STATUS" = "healthy" ]; then
+                echo "Deploy OK — container saudável."
+                exit 0
+              fi
+              sleep 5
+            done
+            echo "ERRO: container não ficou saudável a tempo. Verifique 'docker logs licitacoes-licitacoes-1' na VPS."
+            exit 1
+
+# =============================================================================
+# Secrets necessários no GitHub (Settings → Secrets and variables → Actions):
+#   HETZNER_HOST      → 142.132.189.186
+#   HETZNER_USER      → root  (ou um usuário de deploy dedicado — recomendado)
+#   HETZNER_SSH_KEY   → chave PRIVADA dedicada para deploy (gere uma nova, não
+#                        reaproveite a que você usa manualmente). Ver DEPLOY_NOTES.md.
+# =============================================================================

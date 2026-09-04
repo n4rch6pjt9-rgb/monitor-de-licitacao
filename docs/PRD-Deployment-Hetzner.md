@@ -1,72 +1,148 @@
 # PRD: Deploy na Infraestrutura Hetzner (VPS)
 
-Este documento define os requisitos, a arquitetura e o fluxo de implantação (Deploy) do sistema **Monitor de Licitações** em uma VPS (Virtual Private Server) provida pela Hetzner.
+**Versão 2.0** — reescrito após inspeção real do servidor `gymsite-api` em
+04/09/2026 (via SSH, comandos somente-leitura: `ss -tlnp`, `docker ps -a`,
+`free -h`, `df -h`, e leitura do `docker-compose.prod.yml` e
+`cloudflared/config.yml` reais). A v1.0 deste documento continha suposições
+que o servidor real contradiz — ver seção 7.
+
+Este documento define os requisitos, a arquitetura e o fluxo de implantação do
+sistema **Monitor de Licitações** na VPS Hetzner `gymsite-api`.
 
 ---
 
 ## 1. Visão Geral da Arquitetura
 
-O sistema é um monorepo construído com **React (Vite) + Express (Node.js) + Drizzle ORM**, conectando-se externamente ao **Neon DB (PostgreSQL Serverless)** e APIs da Google (Gemini). Além do servidor Web, a infraestrutura deve suportar a execução assíncrona de **Workers (Scrapers)**.
+Monorepo em **React (Vite) + Express (Node.js) + Drizzle ORM**, conectando a um
+**Neon DB (PostgreSQL Serverless)** externo e à API Gemini. O repositório já
+contém os workers de scraping (`server/workers/pncp_collector.ts`,
+`scraper_puppeteer_sesc.ts`, `sesc_sp_scraper.ts`) e `puppeteer` está no
+`package.json` — mas nenhum deles é importado por `server.ts` nem entra no
+bundle de produção; são scripts npm separados (`worker:pncp`, `worker:sescsp`)
+disparados manualmente, fora deste deploy por enquanto (ver seção 3.3).
 
-### Componentes Lógicos:
-1. **Frontend Server:** Servidor de arquivos estáticos (build do Vite).
-2. **Backend API:** Servidor Express rodando na porta 3001, gerenciando rotas da API e integrações.
-3. **Workers/Cron Jobs:** Processos independentes para raspagem de editais (PNCP, SESC, SEST SENAT).
-4. **Database:** Hospedado no Neon DB (Não consome recursos de computação/armazenamento da VPS).
-
----
-
-## 2. Requisitos de Infraestrutura (Hetzner)
-
-**Pergunta de Consolidação (CX33 Gymsite):** Como já existe uma VPS CX33 (4 vCPU/8 GB) subutilizada rodando o `gymsite-api`, **vamos consolidar o Monitor de Licitações nesta mesma máquina**. Isso economiza custos e a máquina tem memória de sobra. Caso haja necessidade futura de isolamento de IP (por bloqueios governamentais), migramos para uma máquina dedicada.
-
-Se fosse uma máquina dedicada, a configuração seria:
-* **Instância:** `CPX31` (4 vCPU, 8 GB RAM). O Puppeteer gera picos altos de RAM.
-* **Segurança OS:** Configurar Swapfile de 4GB para evitar Out-Of-Memory (OOM) fatal.
+Componente único hoje:
+1. **App**: processo Express único, servindo o build estático do Vite E as
+   rotas de API na mesma porta (**3000**, não 3001 — corrigido da v1.0).
 
 ---
 
-## 3. Modelo de Implantação (Deployment Strategy)
+## 2. Infraestrutura: consolidado na VPS existente
 
-Utilizaremos **Docker e Docker Compose**.
+Decisão: **não** provisionar uma VPS nova. Vamos consolidar na `gymsite-api`
+(Hetzner CX33, Falkenstein), que já roda o backend do GymSite.
 
-### Imagem Base
-Usaremos `node:20-bookworm-slim` (Debian). Isso é vital porque o Puppeteer/Chromium precisa da `glibc` padrão (Alpine usa `musl` e quebra o Chromium headless frequentemente).
+Confirmado por inspeção direta (SSH, 04/09/2026):
 
-### Containerização (Serviços no `docker-compose.production.yml`)
-1. **`app`**: O servidor principal Web.
-2. **`worker-pncp` e `worker-sescsp`**: Imagens isoladas. A orquestração será feita via **node-cron** dentro de um processo Node contínuo ou agendador interno (ex: `node-cron`), mantendo o container em execução (idle) até a hora da raspagem, evitando o overhead de subida e descida constante de containers pesados.
-3. **`caddy`**: Reverse Proxy escolhido (bater o martelo no Caddy pela simplicidade absurda de SSL automático via Let's Encrypt sem sidecars do Certbot).
+| Recurso | Total | Em uso | Observação |
+| --- | --- | --- | --- |
+| RAM | 7,6 GB | ~1 GB por processos | 6,3 GB "available" (resto é cache reaproveitável) |
+| Disco (/) | 75 GB | 39 GB (54%) | 34 GB livres |
+| CPU | 4 vCPU | carga 0.03 | ociosa |
+| Swap | 0 B | — | **recomendo criar 2–4 GB de swap** como rede de segurança antes de subir mais um serviço |
+
+Containers já rodando: `gymsite-api-1` e `gymsite-worker-1` (Python/FastAPI via
+uvicorn — stack diferente da do Monitor de Licitações, que é Node), `redis`
+(fila interna do GymSite), `uptime-kuma` (monitoramento), `cloudflared`.
+
+Se algum dia a carga real (CPU/RAM) mostrar que os dois produtos competem por
+recurso, ou se surgir necessidade de isolar por segurança (ex: um scraper com
+Puppeteer consumindo memória de forma imprevisível), migramos o Monitor de
+Licitações para uma VPS própria — o app já roda em container, então essa
+migração é só apontar o compose para outra máquina.
 
 ---
 
-## 4. Fluxo de CI/CD (Integração e Entrega Contínua)
+## 3. Modelo de Implantação
 
-O fluxo será automatizado via **GitHub Actions**:
-1. **Push na `main`:** O desenvolvedor executa `npm run auto-ship` localmente.
-2. **Build (GitHub Actions):** O pipeline faz o build e dispara o SSH via Action.
-3. **Deploy (Hetzner):** O script executa `docker compose up -d --build`. 
-   > *Nota de Downtime:* Aceitaremos o micro-downtime de alguns segundos durante a recriação do container `app`. Como é uma ferramenta interna B2B (não é B2C), isso é perfeitamente aceitável e evita a complexidade de um Traefik/Blue-Green deployment agora.
+### 3.1 Sem Caddy — reaproveitar o Cloudflare Tunnel existente
+
+A v1.0 deste PRD assumia Nginx ou Caddy expondo as portas 80/443. Isso **não
+existe** no servidor real: `ss -tlnp` mostra só a porta 22 (SSH) escutando. O
+acesso público ao `gymsite-api` acontece 100% via **Cloudflare Tunnel**
+(`cloudflared`), que faz conexão de saída para a borda da Cloudflare — nenhuma
+porta de entrada precisa ficar aberta no host.
+
+Decisão: o Monitor de Licitações usa o **mesmo túnel** (tunnel ID
+`12675577-d94b-4a19-b1df-a86713dbaf80`), adicionando uma nova regra de
+`ingress` no `cloudflared/config.yml` apontando para o novo container por
+alias de rede Docker, exatamente como já é feito para o `gymsite-api` e o
+`uptime-kuma`. Isso elimina toda a complexidade de certificado TLS/Let's
+Encrypt da v1.0 — a Cloudflare cuida disso na borda.
+
+### 3.2 Docker
+
+Multi-stage, base **`node:20-bookworm-slim`** (Debian) — mantido da v1.0,
+continua sendo a escolha certa porque facilita rodar os workers com Puppeteer
+neste mesmo container no futuro, sem trocar a base da imagem. Por ora o build
+seta `PUPPETEER_SKIP_DOWNLOAD=true` para não baixar o Chromium (~300MB) à toa,
+já que os workers não rodam neste deploy ainda.
+
+Compose **separado** do `docker-compose.prod.yml` do GymSite (arquivo
+`docker-compose.licitacoes.yml` próprio), conectado à mesma rede Docker
+`gymsite` como `external: true`. Isso isola o ciclo de vida dos dois deploys —
+atualizar o Monitor de Licitações nunca reinicia os containers do GymSite.
+
+### 3.3 Workers/Scrapers — código existe, execução em produção adiada
+
+`pncp_collector.ts`, `scraper_puppeteer_sesc.ts` e `sesc_sp_scraper.ts` já
+existem no repositório, mas não fazem parte deste deploy: `server.ts` não os
+importa, e a imagem de produção nem baixa o Chromium do Puppeteer
+(`PUPPETEER_SKIP_DOWNLOAD=true`). Quando forem colocados para rodar em
+produção, falta decidir a orquestração (`node-cron` num processo de vida longa
+vs. containers que sobem e morrem por agendamento), instalar as libs de
+sistema que o Chromium exige na imagem, e dimensionar memória de acordo com o
+que o Puppeteer realmente consumir na prática.
 
 ---
 
-## 5. Segurança, Backup e Monitoramento
+## 4. Fluxo de CI/CD
 
-As Regras de Ouro aplicadas ao ambiente:
+GitHub Actions builda a imagem, publica em
+`ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao` e faz deploy via SSH para um
+usuário **`deploy`** dedicado (membro do grupo `docker`, não root), usando uma
+chave SSH própria do CI — nunca a chave pessoal do desenvolvedor.
 
-| Área | Aplicação na VPS |
-| :--- | :--- |
-| **Segurança SSH** | Desabilitar login de `root`, forçar autenticação via Chave Pública (SSH Keys) e instalar `fail2ban` para bloquear ataques de força bruta no SSH. |
-| **Isolamento** | Chaves **Gemini**, **Linear** e **DATABASE_URL** injetadas apenas via GitHub Secrets / `.env` protegido. Nunca na imagem. |
-| **Monitoramento** | Além do `restart: always`, integrar alertas simples (via Telegram/Discord/Slack) no bloco `catch` dos scrapers para avisar se estiverem falhando em loop. |
-| **Proteção de IPs** | Portais GOV.BR frequentemente bloqueiam IPs de Datacenters (Hetzner). Se os blocos da Hetzner forem banidos, usaremos um proxy residencial (BrightData/Oxylabs) apenas para as requisições HTTP do Scraper. |
-| **Backup** | O Neon DB já gerencia os dados. O servidor rodará "Stateless". Não guardaremos anexos PDFs localmente a longo prazo (apenas cache temporário em `/tmp`). |
+Deploy roda `docker compose pull && docker compose up -d` e aguarda o
+healthcheck do container (`GET /api/health`) ficar `healthy` antes de considerar
+sucesso. Há uma janela curta de indisponibilidade durante a recriação do
+container — aceitável para uma ferramenta interna B2B.
+
+---
+
+## 5. Segurança
+
+| Área | Aplicação |
+| --- | --- |
+| Acesso SSH do CI | Usuário `deploy` dedicado, sem privilégio de root, chave própria (não a pessoal) |
+| Segredos | `GEMINI_API_KEY` e `DATABASE_URL` só em `.env.production` na VPS (não versionado) e nos GitHub Secrets — nunca na imagem Docker |
+| Superfície de rede | Nenhuma porta nova aberta no host — tudo via túnel Cloudflare, igual ao GymSite |
+| Isolamento entre apps | Compose separado do GymSite, `mem_limit` de 1 GB no container para conter picos |
+| Backup | Dados ficam no Neon (gerenciado). Nenhum estado persistente local hoje — se isso mudar (ex: cache de PDFs), revisitar |
 
 ---
 
 ## 6. Próximos Passos (Action Items)
 
-- [x] **Dockerfile:** `node:20-bookworm-slim` multi-stage com libs do Chromium.
-- [x] **Docker Compose:** Orquestração com limites (1GB para o puppeteer) e Caddy.
-- [x] **Workflow:** `.github/workflows/deploy.yml` para SSH na máquina atual (Gymsite).
-- [ ] **Ajuste de Workers:** Implementar `node-cron` nos arquivos TS para mantê-los rodando nos horários agendados.
+- [x] Dockerfile multi-stage (`node:20-bookworm-slim`)
+- [x] `docker-compose.licitacoes.yml` (rede externa `gymsite`, sem porta no host)
+- [x] Workflow `.github/workflows/deploy.yml` (build + push GHCR + deploy SSH)
+- [x] `DEPLOY_NOTES.md` com o passo a passo manual de primeira configuração
+- [ ] Criar usuário `deploy` na VPS e chave SSH dedicada (passo manual, ver DEPLOY_NOTES.md)
+- [ ] Definir o domínio real a usar (hoje os arquivos usam `licitacoes.SEUDOMINIO.com.br` como placeholder)
+- [ ] Criar `/opt/licitacoes/.env.production` na VPS com as chaves reais
+- [ ] Adicionar a regra de `ingress` no `cloudflared/config.yml` e rotear o DNS do túnel
+- [ ] Criar swap de 2–4 GB na VPS como margem de segurança
+- [ ] (Futuro) Decidir orquestração e colocar os workers de scraping (código já existe) para rodar em produção
+
+---
+
+## 7. O que mudou da v1.0 (para rastreabilidade)
+
+| v1.0 assumia | Realidade confirmada |
+| --- | --- |
+| VPS nova (CPX21/CPX31) | Consolidado na VPS existente `gymsite-api`, com folga de recursos |
+| Backend na porta 3001 | Porta real é **3000** (`server.ts`) |
+| Nginx ou Caddy nas portas 80/443 | Nenhuma porta 80/443 aberta — tudo via Cloudflare Tunnel já existente |
+| Workers `pncp_collector.ts` / `scraper_puppeteer_sesc.ts` já implementados com `node-cron` | Os arquivos **existem** e estão commitados, mas sem `node-cron`/agendamento — são scripts npm disparados manualmente, fora deste deploy por enquanto |
+| "Zero downtime" no deploy | Há uma janela curta de indisponibilidade na recriação do container (aceitável) |
