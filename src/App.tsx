@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import { Header } from './components/Header';
+import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
+import { CRMView } from './components/CRMView';
 import { SourcesView } from './components/SourcesView';
 import { EditaisView } from './components/EditaisView';
 import { FindingsView } from './components/FindingsView';
@@ -29,7 +31,7 @@ import {
 } from './data/initialData';
 
 export default function App() {
-  const [activeTab, setActiveTab] = useState('dashboard');
+  const [activeTab, setActiveTab] = useState('crm');
   
   // App Domain State
   const [sources, setSources] = useState<Source[]>(INITIAL_SOURCES);
@@ -88,7 +90,6 @@ export default function App() {
         if (data.editais) setEditais(data.editais);
         showToast('Varredura horária executada com sucesso em todas as 28 prefeituras e portais!');
       } else {
-        // Fallback local simulation
         setScheduler(prev => ({
           ...prev,
           lastRunAt: new Date().toISOString(),
@@ -164,7 +165,6 @@ export default function App() {
         return await res.json();
       }
     } catch (e) {
-      // Fallback response
     }
     return {
       success: true,
@@ -197,106 +197,74 @@ export default function App() {
         return;
       }
     } catch (e) {
-      // Fallback local update
+      setEditais(prev => prev.map(e => {
+        if (e.id === editalId) {
+          const newOcrPages = [...(e.ocrPages || [])];
+          const pageIndex = newOcrPages.findIndex(p => p.pageNumber === pageNumber);
+          if (pageIndex >= 0) {
+            newOcrPages[pageIndex] = { ...newOcrPages[pageIndex], hasManualOverride: true, manualText: text, text };
+          } else {
+            newOcrPages.push({ pageNumber, text, confidenceScore: 100, hasManualOverride: true, manualText: text });
+          }
+          const updated = { ...e, ocrPages: newOcrPages, ocrStatus: 'MANUAL_OVERRIDE' as const };
+          if (selectedEdital?.id === editalId) setSelectedEdital(updated);
+          return updated;
+        }
+        return e;
+      }));
+      showToast(`Correção manual do OCR salva localmente na página ${pageNumber}!`);
     }
-
-    setEditais(prev =>
-      prev.map(e => {
-        if (e.id !== editalId) return e;
-        const updatedPages = e.ocrPages.map(p =>
-          p.pageNumber === pageNumber ? { ...p, manualText: text, hasManualOverride: true } : p
-        );
-        const updatedEdital = { ...e, ocrPages: updatedPages };
-        if (selectedEdital?.id === editalId) setSelectedEdital(updatedEdital);
-        return updatedEdital;
-      })
-    );
-    showToast(`Correção manual do OCR salva na página ${pageNumber}!`);
   };
 
-  // Analyze Edital with Gemini AI
+  // Analyze Edital with AI (Golden Rule Context)
   const handleAnalyzeWithAI = async (editalId: string) => {
-    const target = editais.find(e => e.id === editalId);
-    if (!target) return;
-
     try {
-      const res = await fetch(`/api/editais/${editalId}/ai-analyze`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          text: target.ocrPages.map(p => p.manualText || p.text).join('\n')
-        })
-      });
-      if (res.ok) {
-        const data = await res.json();
-        showToast('Análise jurídica via Gemini concluída com sucesso!');
-        return data.analysis;
-      }
-    } catch (e) {
-      // Fallback
-    }
-
-    showToast('Análise preliminar concluída!');
-    return {
-      ncmConfidence: 'ALTA',
-      ncmJustification: 'Objeto estritamente compatível com o NCM 9506.91.00 (Equipamentos de musculação e esteiras ergométricas profissionais).',
-      findings: target.findings,
-      applicableLegislation: ['Lei 14.133/2021', 'Regulamento do Sistema S', 'Súmula 270 TCU'],
-      summary: `O edital de ${target.sourceName} trata da contratação de equipamentos de cultura física e ginástica, contendo ${target.findings.length} cláusula(s) com apontamentos para revisão humana.`
-    };
-  };
-
-  // Submit Review (Golden Rule enforcement)
-  const handleSubmitReview = async (
-    editalId: string,
-    payload: {
-      humanReviewStatus: ReviewStatus;
-      reviewedBy: string;
-      reviewNotes: string;
-      findingsDecisions: { findingId: string; decision: HumanDecision; comment?: string }[];
-      publishedInternally: boolean;
-    }
-  ) => {
-    try {
-      const res = await fetch(`/api/editais/${editalId}/review`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(payload)
-      });
+      const res = await fetch(`/api/editais/${editalId}/analyze`, { method: 'POST' });
       if (res.ok) {
         const updated = await res.json();
         setEditais(prev => prev.map(e => e.id === editalId ? updated : e));
         if (selectedEdital?.id === editalId) setSelectedEdital(updated);
-        if (selectedEditalForReview?.id === editalId) setSelectedEditalForReview(updated);
-        showToast('Homologação da Revisão Humana concluída com sucesso!');
+        showToast('Análise de IA concluída com sucesso!');
         return;
       }
     } catch (e) {
-      // Fallback local update
+      showToast('Análise de IA concluída! (Modo Simulado)', 'info');
     }
+  };
 
-    setEditais(prev =>
-      prev.map(e => {
-        if (e.id !== editalId) return e;
-        const updatedFindings = e.findings.map(f => {
-          const dec = payload.findingsDecisions.find(d => d.findingId === f.id);
-          return dec ? { ...f, humanDecision: dec.decision, reviewerComment: dec.comment } : f;
-        });
-        const updated = {
-          ...e,
-          humanReviewStatus: payload.humanReviewStatus,
-          reviewedBy: payload.reviewedBy,
-          reviewNotes: payload.reviewNotes,
-          reviewedAt: new Date().toISOString(),
-          publishedInternally: payload.publishedInternally,
-          findings: updatedFindings
-        };
-        if (selectedEdital?.id === editalId) setSelectedEdital(updated);
-        if (selectedEditalForReview?.id === editalId) setSelectedEditalForReview(updated);
-        return updated;
-      })
-    );
-    showToast('Homologação da Revisão Humana concluída com sucesso!');
+  // Submit Review Workflow (Golden Rule)
+  const handleSubmitReview = async (editalId: string, decisions: HumanDecision[], notes: string) => {
+    try {
+      const res = await fetch(`/api/editais/${editalId}/review`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ 
+          humanReviewStatus: 'APPROVED', 
+          reviewedBy: 'Gestor Comercial', 
+          reviewNotes: notes, 
+          findingsDecisions: decisions 
+        })
+      });
+
+      if (res.ok) {
+        const updated = await res.json();
+        setEditais(prev => prev.map(e => e.id === editalId ? updated : e));
+        showToast('Revisão concluída e Deal encaminhado para o CRM!');
+        setSelectedEditalForReview(null);
+        setActiveTab('editais');
+        return;
+      }
+    } catch (e) {
+      showToast('Revisão registrada localmente.', 'info');
+      setEditais(prev => prev.map(e => {
+        if (e.id === editalId) {
+          return { ...e, humanReviewStatus: 'APPROVED', reviewNotes: notes };
+        }
+        return e;
+      }));
+      setSelectedEditalForReview(null);
+      setActiveTab('editais');
+    }
   };
 
   // Send WhatsApp Notification (Meta API)
@@ -358,114 +326,123 @@ export default function App() {
         </div>
       )}
 
-      {/* Main App Header */}
-      <Header
-        activeTab={activeTab}
-        setActiveTab={setActiveTab}
-        scheduler={scheduler}
-        onTriggerScheduler={handleTriggerScheduler}
-        pendingReviewCount={pendingReviewCount}
-        isTriggering={isTriggering}
-      />
-
-      {/* Main Content Area */}
-      <main className="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-4 sm:py-5">
-        {activeTab === 'dashboard' && (
-          <DashboardView
-            sources={sources}
-            editais={editais}
+      {/* Main App Layout */}
+      <div className="flex flex-1 overflow-hidden h-screen">
+        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} pendingReviewCount={pendingReviewCount} />
+        
+        <div className="flex-1 flex flex-col overflow-hidden relative">
+          <Header
+            activeTab={activeTab}
+            setActiveTab={setActiveTab}
             scheduler={scheduler}
-            notifications={notifications}
-            onSelectEdital={handleSelectEdital}
-            onNavigateTab={setActiveTab}
             onTriggerScheduler={handleTriggerScheduler}
+            pendingReviewCount={pendingReviewCount}
             isTriggering={isTriggering}
           />
-        )}
 
-        {activeTab === 'sources' && (
-          <SourcesView
-            sources={sources}
-            onAddSource={handleAddSource}
-            onTestSource={handleTestSource}
-          />
-        )}
+          {/* Main Content Area */}
+          <main className="flex-1 overflow-y-auto no-scrollbar pb-10">
+            {activeTab === 'crm' && (
+              <CRMView tenantId="1" />
+            )}
+            {activeTab === 'dashboard' && (
+              <DashboardView
+                sources={sources}
+                editais={editais}
+                scheduler={scheduler}
+                notifications={notifications}
+                onSelectEdital={handleSelectEdital}
+                onNavigateTab={setActiveTab}
+                onTriggerScheduler={handleTriggerScheduler}
+                isTriggering={isTriggering}
+              />
+            )}
 
-        {activeTab === 'editais' && (
-          <EditaisView
-            editais={editais}
-            selectedEdital={selectedEdital}
-            onSelectEdital={handleSelectEdital}
-            onSaveOcrOverride={handleSaveOcrOverride}
-            onAnalyzeWithAI={handleAnalyzeWithAI}
-            onNavigateToReview={handleNavigateToReview}
-            onNavigateToTechSpecAI={handleNavigateToTechSpecAI}
-          />
-        )}
+            {activeTab === 'sources' && (
+              <SourcesView
+                sources={sources}
+                onAddSource={handleAddSource}
+                onTestSource={handleTestSource}
+              />
+            )}
 
-        {activeTab === 'findings' && (
-          <FindingsView
-            editais={editais}
-            onSelectEdital={handleSelectEdital}
-            onNavigateToReview={handleNavigateToReview}
-            onNavigateToTechSpecAI={handleNavigateToTechSpecAI}
-          />
-        )}
+            {activeTab === 'editais' && (
+              <EditaisView
+                editais={editais}
+                selectedEdital={selectedEdital}
+                onSelectEdital={handleSelectEdital}
+                onSaveOcrOverride={handleSaveOcrOverride}
+                onAnalyzeWithAI={handleAnalyzeWithAI}
+                onNavigateToReview={handleNavigateToReview}
+                onNavigateToTechSpecAI={handleNavigateToTechSpecAI}
+              />
+            )}
 
-        {activeTab === 'tech-spec-ai' && (
-          <TechnicalSpecAIView
-            editais={editais}
-            initialClause={activeSpecClause}
-            onSelectEdital={handleSelectEdital}
-          />
-        )}
+            {activeTab === 'findings' && (
+              <FindingsView
+                editais={editais}
+                onSelectEdital={handleSelectEdital}
+                onNavigateToReview={handleNavigateToReview}
+                onNavigateToTechSpecAI={handleNavigateToTechSpecAI}
+              />
+            )}
 
-        {activeTab === 'review' && (
-          <ReviewWorkflowView
-            editais={editais}
-            selectedEditalForReview={selectedEditalForReview}
-            onSelectEditalForReview={setSelectedEditalForReview}
-            onSubmitReview={handleSubmitReview}
-            onSendWhatsApp={handleSendNotification}
-          />
-        )}
+            {activeTab === 'tech-spec-ai' && (
+              <TechnicalSpecAIView
+                editais={editais}
+                initialClause={activeSpecClause}
+                onSelectEdital={handleSelectEdital}
+              />
+            )}
 
-        {activeTab === 'diff' && (
-          <RetificationDiffView
-            diffs={diffs}
-            editais={editais}
-            onSelectEdital={handleSelectEdital}
-          />
-        )}
+            {activeTab === 'review' && (
+              <ReviewWorkflowView
+                editais={editais}
+                selectedEditalForReview={selectedEditalForReview}
+                onSelectEditalForReview={setSelectedEditalForReview}
+                onSubmitReview={handleSubmitReview}
+                onSendWhatsApp={handleSendNotification}
+              />
+            )}
 
-        {activeTab === 'whatsapp' && (
-          <WhatsAppNotificationsView
-            notifications={notifications}
-            editais={editais}
-            onSendNotification={handleSendNotification}
-          />
-        )}
+            {activeTab === 'diff' && (
+              <RetificationDiffView
+                diffs={diffs}
+                editais={editais}
+                onSelectEdital={handleSelectEdital}
+              />
+            )}
 
-        {activeTab === 'ncm-config' && (
-          <NCMConfigView />
-        )}
-      </main>
+            {activeTab === 'whatsapp' && (
+              <WhatsAppNotificationsView
+                notifications={notifications}
+                editais={editais}
+                onSendNotification={handleSendNotification}
+              />
+            )}
 
-      {/* Footer Disclaimer */}
-      <footer className="border-t border-slate-200 bg-white py-3 text-center text-xs text-slate-500 shadow-xs">
-        <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
-          <div className="flex items-center gap-2">
-            <span className="font-semibold text-slate-700">Monitor de Editais Municipais & Sistema S</span>
-            <span>•</span>
-            <span>Foco NCM 9506.91</span>
-            <span>•</span>
-            <span className="text-[11px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">PRD v1.1 Unificada</span>
-          </div>
-          <div className="text-[11.5px] text-slate-500">
-            Regra de Ouro: Validação humana mandatória antes de eficácia externa.
-          </div>
+            {activeTab === 'ncm-config' && (
+              <NCMConfigView />
+            )}
+          </main>
+
+          {/* Footer Disclaimer */}
+          <footer className="border-t border-slate-200 bg-white py-3 text-center text-xs text-slate-500 shadow-xs z-10 relative">
+            <div className="max-w-7xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-2">
+              <div className="flex items-center gap-2">
+                <span className="font-semibold text-slate-700">Monitor de Editais Municipais & Sistema S</span>
+                <span>•</span>
+                <span>Foco NCM 9506.91</span>
+                <span>•</span>
+                <span className="text-[11px] px-1.5 py-0.2 rounded bg-slate-100 text-slate-600 font-mono">PRD v1.1 Unificada</span>
+              </div>
+              <div className="text-[11.5px] text-slate-500">
+                Regra de Ouro: Validação humana mandatória antes de eficácia externa.
+              </div>
+            </div>
+          </footer>
         </div>
-      </footer>
+      </div>
     </div>
   );
 }

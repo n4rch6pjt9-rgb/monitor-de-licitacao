@@ -69,6 +69,10 @@ O sistema funcionará através de Cloudflare Browser Rendering ou VMs dedicadas,
 *   **Feature 5.1 - Centralização de Tokens:** Implementação de `AI Gateway`. O frontend chama um endpoint interno `/api/proxy/gemini` (via Cloudflare Workers), que injeta a chave secreta. O usuário final não gerencia tokens.
 *   **Feature 5.2 - Rate Limiting e Quotas por Usuário:** Contador de consumo de tokens associado à assinatura do cliente.
 
+### Épico 6: Plataforma SaaS (Multi-Tenant & White-label)
+*   **Feature 6.1 - Multi-Tenancy (Isolamento de Dados):** O sistema será vendido para múltiplos clientes comerciais. O banco de dados (PostgreSQL via Supabase) utilizará Row Level Security (RLS) associado ao `tenant_id` para garantir que um cliente jamais acesse dados, fontes ou editais de outro.
+*   **Feature 6.2 - UI White-label:** Interface dinâmica que puxa o logotipo (`logo_url`) e as cores da marca (`primary_color`) do banco de dados de acordo com o `tenant` logado, permitindo revenda corporativa customizada.
+
 ---
 
 ## 6. Requisitos de Fluxo (Managed Agent Flow)

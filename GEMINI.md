@@ -80,7 +80,7 @@ Ao terminar uma tarefa ou o dia de trabalho:
 
 ### 8.4. Deploy Seguro
 - **Estado da Main**: A branch `main` é sagrada e sempre "pronta para deploy".
-- **Migrações**: Mudanças de esquema no banco devem ir no mesmo commit do código que as utiliza.
+- **Migrações e Neon Database**: O banco de dados SaaS (PostgreSQL via Neon) deve usar a técnica de **Database Branching**. Alterações de banco (`drizzle-kit generate`) acompanham a feature branch. Consulte [NEON_RULES.md](./docs/NEON_RULES.md) para políticas de RLS e deploys seguros de esquema.
 
 ## 9. Abstração de Infraestrutura de IA (Managed AI)
 * **A Regra**: A inteligência deve ser nativa e o gerenciamento de tokens centralizado.
@@ -135,6 +135,10 @@ Sempre que eu usar uma palavra-chave com `/`, ative a skill correspondente segui
 ### /ship
 - **Ação**: Ative `Git_Workflow_Manager`.
 - **Regra**: Verifique o status da worktree, sugira o comando de commit semântico e gere um resumo para o Pull Request focado no impacto técnico.
+
+### /ploomes
+- **Ação**: Ative `Ploomes_Integrator`.
+- **Regra**: Você conhece a API v2 do Ploomes (OData). Sempre que gerar código para o CRM, use o padrão de Cloudflare Functions ou integrações serverless. Nunca use a chave do Ploomes no código estático (use variáveis de ambiente). Sempre verifique se o 'Deal' já existe antes de criar um novo (Upsert Logic via `$filter=contains()`). O resumo enviado deve conter *"Extraído via IA - Conferir Edital Original"*.
 
 ### Regras de Invocação das Skills:
 1. **O Gatilho Visual**: Ao iniciar uma Skill, comece a resposta com `[SKILL ATIVA: Nome da Skill]`.

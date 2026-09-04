@@ -3,26 +3,21 @@ import path from 'path';
 import { fileURLToPath } from 'url';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
-import {
-  INITIAL_SOURCES,
-  INITIAL_EDITAIS,
-  INITIAL_NOTIFICATIONS,
-  INITIAL_DIFFS,
-  INITIAL_NCM_CONFIG
-} from './server/data';
 import { analyzeEditalTextWithAI, analyzeTechnicalSpecificationRestrictedAI } from './server/gemini';
-import { Source, Edital, WhatsAppNotification, RetificationDiff, SchedulerState } from './src/types';
+import { WhatsAppNotification, RetificationDiff, SchedulerState } from './src/types';
+import { db } from './server/db/index.js';
+import * as schema from './server/db/schema.js';
+import { eq, ilike, or, desc, sql } from 'drizzle-orm';
+import { crmRouter } from './server/routes/crm.js';
 
 dotenv.config();
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
-// In-Memory Database State
-let sources: Source[] = [...INITIAL_SOURCES];
-let editais: Edital[] = [...INITIAL_EDITAIS];
-let notifications: WhatsAppNotification[] = [...INITIAL_NOTIFICATIONS];
-let diffs: RetificationDiff[] = [...INITIAL_DIFFS];
+// Conexão com o banco via Drizzle
+let notifications: WhatsAppNotification[] = [];
+let diffs: RetificationDiff[] = [];
 
 let schedulerState: SchedulerState = {
   isRunning: true,
@@ -30,7 +25,7 @@ let schedulerState: SchedulerState = {
   lastRunAt: new Date(Date.now() - 25 * 60 * 1000).toISOString(),
   nextRunAt: new Date(Date.now() + 35 * 60 * 1000).toISOString(),
   totalRunsCompleted: 148,
-  activeSourcesCount: sources.filter(s => s.status === 'ACTIVE').length,
+  activeSourcesCount: 1,
   lastExecutionDurationSeconds: 12.4,
   logs: [
     {
@@ -75,6 +70,9 @@ async function startServer() {
 
   app.use(express.json({ limit: '15mb' }));
 
+  // Registrar rotas de CRM
+  app.use('/api/crm', crmRouter);
+
   // ==========================================
   // AUTHENTICATION MIDDLEWARE (Regra 3: Segurança Default-On)
   // ==========================================
@@ -101,51 +99,62 @@ async function startServer() {
   // ==========================================
 
   // Health check
-  app.get('/api/health', (req: Request, res: Response) => {
+  app.get('/api/health', async (req: Request, res: Response) => {
+    const sourcesCountResult = await db.select({ count: sql<number>`count(*)` }).from(schema.sources);
+    const editaisCountResult = await db.select({ count: sql<number>`count(*)` }).from(schema.editais);
     res.json({
       status: 'ok',
       timestamp: new Date().toISOString(),
-      version: '1.1-unificada',
-      sourcesCount: sources.length,
-      editaisCount: editais.length
+      version: '1.2-neon-db',
+      sourcesCount: sourcesCountResult[0].count,
+      editaisCount: editaisCountResult[0].count
     });
   });
 
   // Sources endpoints
-  app.get('/api/sources', (req: Request, res: Response) => {
-    res.json(sources);
+  app.get('/api/sources', async (req: Request, res: Response) => {
+    try {
+      const data = await db.select().from(schema.sources).where(eq(schema.sources.tenantId, 1));
+      res.json(data);
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao buscar fontes.' });
+    }
   });
 
-  app.post('/api/sources', (req: Request, res: Response) => {
+  app.post('/api/sources', async (req: Request, res: Response) => {
     const body = req.body;
-    const newSource: Source = {
-      id: body.id || `src-custom-${Date.now()}`,
-      name: body.name || 'Nova Fonte',
-      category: body.category || 'Prefeitura',
-      type: body.type || 'SCRAPER',
-      uf: body.uf || 'RS',
-      city: body.city || '',
-      endpointOrUrl: body.endpointOrUrl || '',
-      selectorOrParams: body.selectorOrParams || '',
-      authType: body.authType || 'NONE',
-      status: 'ACTIVE',
-      lastCheckedAt: new Date().toISOString(),
-      latencyMs: Math.floor(Math.random() * 300 + 150),
-      successRate: 100,
-      totalCollected: 0,
-      format: body.type === 'API' ? 'JSON' : 'HTML',
-      notes: body.notes
-    };
+    try {
+      const newSource = {
+        id: body.id || `src-custom-${Date.now()}`,
+        tenantId: 1,
+        name: body.name || 'Nova Fonte',
+        category: body.category || 'Prefeitura',
+        type: body.type || 'SCRAPER',
+        uf: body.uf || 'RS',
+        city: body.city || '',
+        endpointOrUrl: body.endpointOrUrl || '',
+        selectorOrParams: body.selectorOrParams || '',
+        authType: body.authType || 'NONE',
+        status: 'ACTIVE',
+        lastCheckedAt: new Date(),
+        latencyMs: Math.floor(Math.random() * 300 + 150),
+        successRate: 100,
+        totalCollected: 0,
+        format: body.type === 'API' ? 'JSON' : 'HTML',
+        notes: body.notes
+      };
 
-    const existingIndex = sources.findIndex(s => s.id === newSource.id);
-    if (existingIndex >= 0) {
-      sources[existingIndex] = { ...sources[existingIndex], ...newSource };
-    } else {
-      sources.unshift(newSource);
+      const [inserted] = await db.insert(schema.sources)
+        .values(newSource)
+        .onConflictDoUpdate({ target: schema.sources.id, set: newSource })
+        .returning();
+
+      schedulerState.activeSourcesCount += 1;
+      res.json(inserted);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao salvar fonte.' });
     }
-
-    schedulerState.activeSourcesCount = sources.filter(s => s.status === 'ACTIVE').length;
-    res.json(newSource);
   });
 
   // Test Source Connection (API or Scraper Probe)
@@ -188,107 +197,213 @@ async function startServer() {
   });
 
   // Editais endpoints
-  app.get('/api/editais', (req: Request, res: Response) => {
-    const { category, search, status, ncm } = req.query;
-    let filtered = [...editais];
+  app.get('/api/editais', async (req: Request, res: Response) => {
+    try {
+      const { category, search, status, ncm } = req.query;
+      let conditions = [eq(schema.editais.tenantId, 1)];
 
-    if (category && category !== 'ALL') {
-      filtered = filtered.filter(e => e.sourceCategory === category);
-    }
-    if (status && status !== 'ALL') {
-      filtered = filtered.filter(e => e.humanReviewStatus === status);
-    }
-    if (ncm && ncm !== 'ALL') {
-      filtered = filtered.filter(e => e.ncmCode.includes(String(ncm)));
-    }
-    if (search) {
-      const q = String(search).toLowerCase();
-      filtered = filtered.filter(e =>
-        e.title.toLowerCase().includes(q) ||
-        e.processNumber.toLowerCase().includes(q) ||
-        e.sourceName.toLowerCase().includes(q) ||
-        e.objectDescription.toLowerCase().includes(q)
-      );
-    }
+      if (category && category !== 'ALL') {
+        conditions.push(eq(schema.editais.sourceCategory, String(category)));
+      }
+      if (status && status !== 'ALL') {
+        conditions.push(eq(schema.editais.humanReviewStatus, String(status)));
+      }
+      if (ncm && ncm !== 'ALL') {
+        conditions.push(ilike(schema.editais.ncmCode, `%${String(ncm)}%`));
+      }
+      if (search) {
+        const q = `%${String(search)}%`;
+        conditions.push(
+          or(
+            ilike(schema.editais.title, q),
+            ilike(schema.editais.processNumber, q),
+            ilike(schema.editais.sourceName, q),
+            ilike(schema.editais.objectDescription, q)
+          )
+        );
+      }
 
-    res.json(filtered);
+      const andCondition = conditions.reduce((acc, curr) => sql`${acc} AND ${curr}`);
+      const data = await db.select().from(schema.editais).where(andCondition).orderBy(desc(schema.editais.publishedAt));
+      res.json(data);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao buscar editais.' });
+    }
   });
 
-  app.get('/api/editais/:id', (req: Request, res: Response) => {
-    const edital = editais.find(e => e.id === req.params.id);
-    if (!edital) {
-      return res.status(404).json({ error: 'Edital não encontrado' });
+  app.get('/api/editais/:id', async (req: Request, res: Response) => {
+    try {
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, req.params.id));
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
+      res.json(edital);
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao buscar edital.' });
     }
-    res.json(edital);
   });
 
   // Review Workflow action (Golden Rule: human review required)
-  app.post('/api/editais/:id/review', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const { humanReviewStatus, reviewedBy, reviewNotes, findingsDecisions, publishedInternally } = req.body;
+  app.post('/api/editais/:id/review', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { humanReviewStatus, reviewedBy, reviewNotes, findingsDecisions, publishedInternally } = req.body;
 
-    const editalIndex = editais.findIndex(e => e.id === id);
-    if (editalIndex === -1) {
-      return res.status(404).json({ error: 'Edital não encontrado' });
-    }
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
 
-    const edital = editais[editalIndex];
-    
-    // Update individual findings decisions if provided
-    if (findingsDecisions && Array.isArray(findingsDecisions)) {
-      edital.findings = edital.findings.map(f => {
-        const decision = findingsDecisions.find(d => d.findingId === f.id);
-        if (decision) {
-          return {
-            ...f,
-            humanDecision: decision.decision,
-            reviewerComment: decision.comment || f.reviewerComment,
-            reviewedBy: reviewedBy || 'Revisor Jurídico',
-            reviewedAt: new Date().toISOString()
-          };
+      // Prepare updates
+      const updateData: any = {
+        humanReviewStatus: humanReviewStatus || 'APPROVED',
+        reviewedBy: reviewedBy || 'Analista Jurídico de Licitações',
+        reviewedAt: new Date(),
+        reviewNotes: reviewNotes || 'Revisão humana concluída com sucesso.',
+        publishedInternally: publishedInternally !== undefined ? publishedInternally : true,
+      };
+
+      if (findingsDecisions && Array.isArray(findingsDecisions)) {
+        updateData.findings = edital.findings?.map((f: any) => {
+          const decision = findingsDecisions.find(d => d.findingId === f.id);
+          if (decision) {
+            return {
+              ...f,
+              humanDecision: decision.decision,
+              reviewerComment: decision.comment || f.reviewerComment,
+              reviewedBy: reviewedBy || 'Revisor Jurídico',
+              reviewedAt: new Date().toISOString()
+            };
+          }
+          return f;
+        }) || [];
+      }
+
+      const [updatedEdital] = await db.update(schema.editais).set(updateData).where(eq(schema.editais.id, id)).returning();
+      
+      // Auto-integração com CRM se foi APPROVED
+      if (updateData.humanReviewStatus === 'APPROVED') {
+        try {
+          // Tentativa de Envio para Ploomes Externo
+          await fetch(`${req.protocol}://${req.get('host')}/api/crm/sync`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.MONITOR_API_KEY || 'monitor-dev-key' },
+            body: JSON.stringify({ editalId: id, tenantId: edital.tenantId })
+          });
+        } catch (crmErr) {
+          console.error('Falha ao acionar integração CRM Ploomes:', crmErr);
         }
-        return f;
-      });
+        
+        try {
+          // Gatilho do CRM Agentic Interno (Fallback/Principal)
+          const { Orchestrator } = await import('./server/crm_agentic/pipeline/orchestrator');
+          const orchestrator = new Orchestrator();
+          
+          // O agente vai ler os findings e o texto OCR
+          const analysisText = edital.findings ? JSON.stringify(edital.findings) : "Análise em aberto.";
+          
+          // Rodamos de forma "fire-and-forget" para não travar o request do front
+          orchestrator.runAgenticLoopForNewDeal(edital.tenantId.toString(), edital, analysisText).catch(e => {
+             console.error('[CRM Orchestrator FireAndForget Error]:', e);
+          });
+        } catch (crmInternalErr) {
+          console.error('Falha ao acionar o CRM Interno Agentic:', crmInternalErr);
+        }
+      }
+
+      res.json(updatedEdital);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao revisar edital.' });
     }
+  });
 
-    edital.humanReviewStatus = humanReviewStatus || 'APPROVED';
-    edital.reviewedBy = reviewedBy || 'Analista Jurídico de Licitações';
-    edital.reviewedAt = new Date().toISOString();
-    edital.reviewNotes = reviewNotes || 'Revisão humana concluída com sucesso.';
-    edital.publishedInternally = publishedInternally !== undefined ? publishedInternally : true;
+  // ==========================================
+  // RevOps Endpoints (Squad de Inteligência)
+  // ==========================================
+  app.get('/api/crm/revops/insights', async (req: Request, res: Response) => {
+    try {
+      const tenantId = (req.query.tenantId as string) || '1';
+      const { RevOpsAgent } = await import('./server/crm_agentic/agents/revops_agent');
+      const agent = new RevOpsAgent();
+      
+      const insights = await agent.generateStrategicBriefing(tenantId);
+      res.json(insights);
+    } catch (e) {
+      console.error('[RevOps API Error]:', e);
+      res.status(500).json({ error: 'Falha ao gerar insights de RevOps' });
+    }
+  });
 
-    editais[editalIndex] = { ...edital };
-    res.json(editais[editalIndex]);
+  app.post('/api/crm/revops/report', async (req: Request, res: Response) => {
+    try {
+      const { tenantId, recipientPhone } = req.body;
+      const tid = tenantId || '1';
+      const phone = recipientPhone || '+55 55 99876-5432';
+      
+      const { RevOpsAgent } = await import('./server/crm_agentic/agents/revops_agent');
+      const agent = new RevOpsAgent();
+      
+      const insights = await agent.generateStrategicBriefing(tid);
+      
+      // Simulação do envio do WhatsApp
+      const newNotif = {
+        id: `wpp-revops-${Date.now()}`,
+        recipientPhone: phone,
+        status: 'SENT',
+        messageBody: `📊 *Relatório Semanal de RevOps*\n\n${insights.aiBriefing}\n\nAcesse o CRM para agir sobre as oportunidades estagnadas.`,
+        sentAt: new Date().toISOString(),
+        templateName: 'meta_revops_briefing'
+      };
+      
+      res.json(newNotif);
+    } catch (e) {
+      console.error('[RevOps Report API Error]:', e);
+      res.status(500).json({ error: 'Falha ao despachar relatório RevOps' });
+    }
   });
 
   // OCR Manual Text Override (RF-05 / Mitigação de OCR Incompleto)
-  app.post('/api/editais/:id/ocr-override', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const { pageNumber, text } = req.body;
+  app.post('/api/editais/:id/ocr-override', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const { pageNumber, text } = req.body;
 
-    const edital = editais.find(e => e.id === id);
-    if (!edital) {
-      return res.status(404).json({ error: 'Edital não encontrado' });
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
+
+      let ocrPages = [...(edital.ocrPages || [])];
+      let targetPage = ocrPages.find((p: any) => p.pageNumber === pageNumber);
+
+      if (targetPage) {
+        targetPage.hasManualOverride = true;
+        targetPage.manualText = text;
+        targetPage.text = text;
+        targetPage.confidenceScore = 100;
+      } else {
+        targetPage = {
+          pageNumber,
+          text,
+          confidenceScore: 100,
+          hasManualOverride: true,
+          manualText: text
+        };
+        ocrPages.push(targetPage);
+      }
+
+      await db.update(schema.editais).set({
+        ocrPages,
+        ocrStatus: 'MANUAL_OVERRIDE'
+      }).where(eq(schema.editais.id, id));
+
+      res.json({ success: true, page: targetPage });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao sobrescrever OCR.' });
     }
-
-    const page = edital.ocrPages.find(p => p.pageNumber === pageNumber);
-    if (page) {
-      page.hasManualOverride = true;
-      page.manualText = text;
-      page.text = text;
-      page.confidenceScore = 100;
-    } else {
-      edital.ocrPages.push({
-        pageNumber,
-        text,
-        confidenceScore: 100,
-        hasManualOverride: true,
-        manualText: text
-      });
-    }
-
-    edital.ocrStatus = 'MANUAL_OVERRIDE';
-    res.json({ success: true, page });
   });
 
   // NCM Monitoring & Lexical Filter Config State (PRD v1.0 / RF-01 & S0-09)
@@ -462,53 +577,49 @@ async function startServer() {
   });
 
   // GET Search and Return Validated Edital PDF Link (/api/config/ncm/link?numero=042/2026)
-  app.get('/api/config/ncm/link', (req: Request, res: Response) => {
+  app.get('/api/config/ncm/link', async (req: Request, res: Response) => {
     let rawParam = (req.query.numero as string) || '042/2026';
-    // Sanitize quotes, %22, backslashes, trailing punctuation that trigger WAF blocks
-    rawParam = rawParam
-      .replace(/%22/gi, '')
-      .replace(/["']/g, '')
-      .replace(/[<>]/g, '')
-      .trim();
+    rawParam = rawParam.replace(/%22/gi, '').replace(/["']/g, '').replace(/[<>]/g, '').trim();
     try {
       rawParam = decodeURIComponent(rawParam).replace(/["']/g, '').trim();
     } catch {}
 
-    const cleanNum = rawParam.toLowerCase();
+    const cleanNum = `%${rawParam.toLowerCase()}%`;
 
-    // 1. Search in in-memory editais database
-    const matchedEdital = editais.find(e => 
-      e.processNumber.toLowerCase().includes(cleanNum) ||
-      e.title.toLowerCase().includes(cleanNum) ||
-      e.id.toLowerCase().includes(cleanNum)
-    );
+    try {
+      const matchedEditalResult = await db.select().from(schema.editais).where(
+        or(
+          ilike(schema.editais.processNumber, cleanNum),
+          ilike(schema.editais.title, cleanNum),
+          ilike(schema.editais.id, cleanNum)
+        )
+      ).limit(1);
 
-    if (matchedEdital) {
-      // Determine validated PDF URL (applying URL rewrite / resilience S0-09 if applicable)
-      let resolvedPdfUrl = matchedEdital.urlValidation?.finalResolvedUrl || matchedEdital.rawUrl;
-      const method = matchedEdital.collectionMethod || matchedEdital.urlValidation?.collectionMethod || 'DIRECT_HTTPX';
+      const matchedEdital = matchedEditalResult[0];
 
-      // Clean URL from any stray quotes or malformed chars
-      resolvedPdfUrl = resolvedPdfUrl.replace(/%22/gi, '').replace(/["']/g, '').trim();
+      if (matchedEdital) {
+        let resolvedPdfUrl = matchedEdital.urlValidation?.finalResolvedUrl || matchedEdital.rawUrl;
+        const method = matchedEdital.urlValidation?.collectionMethod || 'DIRECT_HTTPX';
 
-      // Ensure valid PDF URL format
-      if (resolvedPdfUrl.includes('cdn.sesc.com.br')) {
-        resolvedPdfUrl = resolvedPdfUrl.replace('cdn.sesc.com.br', 'licitacoes.sesc.com.br');
+        resolvedPdfUrl = resolvedPdfUrl.replace(/%22/gi, '').replace(/["']/g, '').trim();
+        if (resolvedPdfUrl.includes('cdn.sesc.com.br')) {
+          resolvedPdfUrl = resolvedPdfUrl.replace('cdn.sesc.com.br', 'licitacoes.sesc.com.br');
+        }
+
+        return res.json({
+          numero: rawParam,
+          url: resolvedPdfUrl,
+          processNumber: matchedEdital.processNumber,
+          title: matchedEdital.title,
+          source: matchedEdital.sourceName,
+          validationStatus: 'VALID_DIRECT_200',
+          mimeType: 'application/pdf',
+          isPdf: true,
+          collectionMethod: method
+        });
       }
-
-      return res.json({
-        numero: rawParam,
-        url: resolvedPdfUrl,
-        processNumber: matchedEdital.processNumber,
-        title: matchedEdital.title,
-        source: matchedEdital.sourceName,
-        validationStatus: 'VALID_DIRECT_200',
-        mimeType: 'application/pdf',
-        isPdf: true,
-        collectionMethod: method,
-        sha256: matchedEdital.sha256Hash,
-        s3StorageKey: matchedEdital.s3StorageKey
-      });
+    } catch (e) {
+      console.error(e);
     }
 
     // 2. Canonical mapping for SESC / Sistema S
@@ -565,72 +676,78 @@ async function startServer() {
   });
 
   // Active URL Chain Validation (RF-11 a RF-14: Two-stage validation with explicit DNS verification & S0-09 Fallback)
-  app.post('/api/editais/:id/validate-url', (req: Request, res: Response) => {
-    const { id } = req.params;
-    const editalIndex = editais.findIndex(e => e.id === id);
-    if (editalIndex === -1) {
-      return res.status(404).json({ error: 'Edital não encontrado' });
+  app.post('/api/editais/:id/validate-url', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
+      
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
+
+      const isSesc = edital.rawUrl.includes('sesc.com.br');
+      let urlValidation: any = {};
+
+      if (isSesc) {
+        // S0-09: Normalização via URL Rewrite Rule
+        urlValidation = {
+          originalUrl: edital.rawUrl,
+          originalRequestedUrl: edital.rawUrl,
+          validationStatus: 'VALID_DIRECT_200',
+          collectionMethod: 'URL_REWRITE',
+          httpStatusCode: 200,
+          finalResolvedUrl: edital.rawUrl,
+          mimeTypeValidated: 'application/pdf (Magic Bytes %PDF-1.5)',
+          contentLengthBytes: 3418290,
+          validatedAt: new Date().toISOString(),
+          dnsResolutionStatus: 'RESOLVED_OK',
+          rewriteRuleApplied: 'cdn.sesc.com.br -> licitacoes.sesc.com.br (Regra S0-09 #1)',
+          limitationNotice: 'Rota canônica normalizada via motor de reescrita S0-09. Integridade de hash e %PDF confirmadas.',
+          redirectChain: [`${edital.rawUrl} (Normalizado com sucesso -> HTTP 200)`],
+          isUnavailable: false
+        };
+      } else {
+        urlValidation = {
+          originalUrl: edital.rawUrl,
+          originalRequestedUrl: edital.rawUrl,
+          validationStatus: 'VALID_DIRECT_200',
+          collectionMethod: 'DIRECT_HTTPX',
+          httpStatusCode: 200,
+          finalResolvedUrl: edital.rawUrl,
+          mimeTypeValidated: 'application/pdf (Magic Bytes %PDF)',
+          contentLengthBytes: 2198000,
+          validatedAt: new Date().toISOString(),
+          dnsResolutionStatus: 'RESOLVED_OK',
+          limitationNotice: 'Documento acessado diretamente com integridade validada via DNS e HTTP 200.',
+          redirectChain: [`${edital.rawUrl} (HTTP 200 Direto)`],
+          isUnavailable: false
+        };
+      }
+
+      await db.update(schema.editais).set({ urlValidation }).where(eq(schema.editais.id, id));
+      res.json(urlValidation);
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao validar URL.' });
     }
-
-    const edital = editais[editalIndex];
-    const isSesc = edital.rawUrl.includes('sesc.com.br');
-
-    if (isSesc) {
-      // S0-09: Normalização via URL Rewrite Rule
-      edital.collectionMethod = 'URL_REWRITE';
-      edital.urlValidation = {
-        originalUrl: edital.rawUrl,
-        originalRequestedUrl: edital.rawUrl,
-        validationStatus: 'VALID_DIRECT_200',
-        collectionMethod: 'URL_REWRITE',
-        httpStatusCode: 200,
-        finalResolvedUrl: edital.rawUrl,
-        mimeTypeValidated: 'application/pdf (Magic Bytes %PDF-1.5)',
-        contentLengthBytes: edital.fileSizeBytes || 3418290,
-        validatedAt: new Date().toISOString(),
-        dnsResolutionStatus: 'RESOLVED_OK',
-        rewriteRuleApplied: 'cdn.sesc.com.br -> licitacoes.sesc.com.br (Regra S0-09 #1)',
-        limitationNotice: 'Rota canônica normalizada via motor de reescrita S0-09. Integridade de hash e %PDF confirmadas.',
-        redirectChain: [
-          `${edital.rawUrl} (Normalizado com sucesso -> HTTP 200)`
-        ],
-        isUnavailable: false
-      };
-    } else {
-      edital.collectionMethod = edital.collectionMethod || 'DIRECT_HTTPX';
-      edital.urlValidation = {
-        originalUrl: edital.rawUrl,
-        originalRequestedUrl: edital.rawUrl,
-        validationStatus: 'VALID_DIRECT_200',
-        collectionMethod: edital.collectionMethod,
-        httpStatusCode: 200,
-        finalResolvedUrl: edital.rawUrl,
-        mimeTypeValidated: 'application/pdf (Magic Bytes %PDF)',
-        contentLengthBytes: edital.fileSizeBytes || 2198000,
-        validatedAt: new Date().toISOString(),
-        dnsResolutionStatus: 'RESOLVED_OK',
-        limitationNotice: 'Documento acessado diretamente com integridade validada via DNS e HTTP 200.',
-        redirectChain: [`${edital.rawUrl} (HTTP 200 Direto)`],
-        isUnavailable: false
-      };
-    }
-
-    editais[editalIndex] = { ...edital };
-    res.json(edital.urlValidation);
   });
 
   // Gemini AI Analysis endpoint
   app.post('/api/editais/:id/analyze-ai', async (req: Request, res: Response) => {
-    const { id } = req.params;
-    const edital = editais.find(e => e.id === id);
-    if (!edital) {
-      return res.status(404).json({ error: 'Edital não encontrado' });
+    try {
+      const { id } = req.params;
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
+
+      const ocrPages: any[] = edital.ocrPages || [];
+      const fullText = ocrPages.map((p: any) => `[PÁGINA ${p.pageNumber}]\n${p.text}`).join('\n\n');
+      const analysis = await analyzeEditalTextWithAI(fullText, edital.title);
+
+      res.json(analysis);
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao analisar com IA.' });
     }
-
-    const fullText = edital.ocrPages.map(p => `[PÁGINA ${p.pageNumber}]\n${p.text}`).join('\n\n');
-    const analysis = await analyzeEditalTextWithAI(fullText, edital.title);
-
-    res.json(analysis);
   });
 
   // Gemini AI Technical Specification & Supplier/Product research endpoint (Item 4.3)
@@ -664,36 +781,40 @@ async function startServer() {
     res.json(notifications);
   });
 
-  app.post('/api/notifications/send', (req: Request, res: Response) => {
-    const { editalId, recipientPhone } = req.body;
-    const edital = editais.find(e => e.id === editalId);
+  app.post('/api/notifications/send', async (req: Request, res: Response) => {
+    try {
+      const { editalId, recipientPhone } = req.body;
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, editalId));
 
-    if (!edital) {
-      return res.status(404).json({ error: 'Edital não encontrado' });
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
+
+      // Regra de Ouro: Bloquear notificação externa se edital não tiver revisão humana aprovada
+      if (edital.humanReviewStatus === 'PENDING') {
+        return res.status(400).json({
+          error: 'Regra de Ouro do PRD: Notificações não podem ser enviadas antes da Revisão Humana Concluída.'
+        });
+      }
+
+      const newNotif: WhatsAppNotification = {
+        id: `wpp-${Date.now()}`,
+        editalId: edital.id,
+        entityName: edital.sourceName,
+        processNumber: edital.processNumber,
+        recipientPhone: recipientPhone || '+55 55 99876-5432',
+        status: 'SENT',
+        messageBody: `🚨 *Novo relatório:* ${edital.sourceName}\nEdital ${edital.processNumber} (NCM ${edital.ncmCode})\nStatus: Revisão Humana Concluída\nAcesse com segurança: https://monitor-editais.gov.br/r/${edital.id}`,
+        sentAt: new Date().toISOString(),
+        deepLink: `https://monitor-editais.gov.br/r/${edital.id}`,
+        templateName: 'meta_novo_relatorio_edital_v1'
+      };
+
+      notifications.unshift(newNotif);
+      res.json(newNotif);
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao enviar notificação.' });
     }
-
-    // Regra de Ouro: Bloquear notificação externa se edital não tiver revisão humana aprovada
-    if (edital.humanReviewStatus === 'PENDING') {
-      return res.status(400).json({
-        error: 'Regra de Ouro do PRD: Notificações não podem ser enviadas antes da Revisão Humana Concluída.'
-      });
-    }
-
-    const newNotif: WhatsAppNotification = {
-      id: `wpp-${Date.now()}`,
-      editalId: edital.id,
-      entityName: edital.sourceName,
-      processNumber: edital.processNumber,
-      recipientPhone: recipientPhone || '+55 55 99876-5432',
-      status: 'SENT',
-      messageBody: `🚨 *Novo relatório:* ${edital.sourceName}\nEdital ${edital.processNumber} (NCM ${edital.ncmCode} - Cultura Física/Ginástica)\nStatus: Revisão Humana Concluída\nAcesse com segurança: https://monitor-editais.gov.br/r/${edital.id}`,
-      sentAt: new Date().toISOString(),
-      deepLink: `https://monitor-editais.gov.br/r/${edital.id}`,
-      templateName: 'meta_novo_relatorio_edital_v1'
-    };
-
-    notifications.unshift(newNotif);
-    res.json(newNotif);
   });
 
   // Scheduler execution
