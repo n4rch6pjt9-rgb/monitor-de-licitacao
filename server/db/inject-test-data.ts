@@ -2,9 +2,9 @@ import 'dotenv/config';
 import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../db/schema';
-import crypto from 'crypto';
 import { eq } from 'drizzle-orm';
 import { encryptSecret } from '../lib/crypto';
+import { INITIAL_SOURCES } from '../data';
 
 async function injectRealisticTest() {
   const connectionString = process.env.DATABASE_URL;
@@ -19,9 +19,14 @@ async function injectRealisticTest() {
   const tenants = await db.select().from(schema.tenants);
   const tenantId = tenants[0].id;
 
+  // IDs fixos (não randomizados a cada execução) para que onConflictDoUpdate
+  // abaixo realmente atualize os registros existentes em vez de duplicá-los
+  // a cada `npm run` deste script.
+  const PNCP_EDITAL_ID = 'edital-test-pncp-001';
+
   const editaisTest = [
     {
-      id: `edital-test-pncp-${crypto.randomBytes(4).toString('hex')}`,
+      id: PNCP_EDITAL_ID,
       tenantId,
       sourceId: 'src-pncp-api-01',
       processNumber: 'PE 1234/2026',
@@ -43,8 +48,8 @@ async function injectRealisticTest() {
       humanReviewStatus: 'PENDING',
       findings: [
         {
-          id: `finding-${crypto.randomBytes(4).toString('hex')}`,
-          editalId: `edital-test-pncp-${crypto.randomBytes(4).toString('hex')}`, // will be slightly mismatched but it's ok for mock UI
+          id: 'finding-pncp-001',
+          editalId: PNCP_EDITAL_ID,
           page: 12,
           snippet: "O fornecimento deverá ser exclusivo da marca X ou Y, sob pena de desclassificação.",
           legalBasis: "Art. 41, I, da Lei nº 14.133/2021",
@@ -58,7 +63,7 @@ async function injectRealisticTest() {
       ]
     },
     {
-      id: `edital-test-sescsp-${crypto.randomBytes(4).toString('hex')}`,
+      id: 'edital-test-sescsp-001',
       tenantId,
       sourceId: 'src-sesc-sp-01',
       processNumber: 'PE 2026012000450',
@@ -80,7 +85,7 @@ async function injectRealisticTest() {
       humanReviewStatus: 'PENDING',
     },
     {
-      id: `edital-test-sest-${crypto.randomBytes(4).toString('hex')}`,
+      id: 'edital-test-sest-001',
       tenantId,
       sourceId: 'src-sest-senat-compras-01',
       processNumber: 'Dispensa 045/2026',
@@ -138,6 +143,34 @@ async function injectRealisticTest() {
     });
     console.log(` ✅ Inserido/Atualizado: ${edital.title}`);
   }
+
+  console.log('💉 Injetando Conectores (Sources)...');
+  for (const source of INITIAL_SOURCES) {
+    const sourceData = {
+      id: source.id,
+      tenantId,
+      name: source.name,
+      category: source.category,
+      type: source.type,
+      uf: source.uf,
+      city: source.city,
+      endpointOrUrl: source.endpointOrUrl,
+      selectorOrParams: source.selectorOrParams,
+      authType: source.authType,
+      status: source.status as any,
+      lastCheckedAt: new Date(source.lastCheckedAt),
+      latencyMs: source.latencyMs,
+      successRate: Math.round(source.successRate),
+      totalCollected: source.totalCollected,
+      format: source.format,
+      notes: source.notes
+    };
+    await db.insert(schema.sources).values(sourceData).onConflictDoUpdate({
+      target: schema.sources.id,
+      set: sourceData
+    });
+  }
+  console.log(` ✅ ${INITIAL_SOURCES.length} Conectores Inseridos/Atualizados.`);
 
   await client.end();
   console.log('✅ Finalizado. Verifique a UI.');
