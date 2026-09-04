@@ -8,6 +8,7 @@ import { db } from './server/db/index.js';
 import * as schema from './server/db/schema.js';
 import { eq, ilike, or, desc, sql } from 'drizzle-orm';
 import { crmRouter } from './server/routes/crm.js';
+import { encryptSecret } from './server/lib/crypto.js';
 
 dotenv.config();
 
@@ -62,7 +63,7 @@ let schedulerState: SchedulerState = {
 
 async function startServer() {
   const app = express();
-  const PORT = 3000;
+  const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
   app.use(express.json({ limit: '15mb' }));
 
@@ -221,7 +222,12 @@ async function startServer() {
 
       const andCondition = conditions.reduce((acc, curr) => sql`${acc} AND ${curr}`);
       const data = await db.select().from(schema.editais).where(andCondition).orderBy(desc(schema.editais.publishedAt));
-      res.json(data);
+      const sanitizedData = data.map(edital => ({
+        ...edital,
+        findings: edital.findings || [],
+        ocrPages: edital.ocrPages || [],
+      }));
+      res.json(sanitizedData);
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'Erro ao buscar editais.' });
@@ -234,7 +240,11 @@ async function startServer() {
       if (!edital) {
         return res.status(404).json({ error: 'Edital não encontrado' });
       }
-      res.json(edital);
+      res.json({
+        ...edital,
+        findings: edital.findings || [],
+        ocrPages: edital.ocrPages || [],
+      });
     } catch (e) {
       res.status(500).json({ error: 'Erro ao buscar edital.' });
     }
@@ -456,6 +466,61 @@ async function startServer() {
     if (ncmDescription) ncmMonitoringConfig.ncmDescription = ncmDescription.trim();
     ncmMonitoringConfig.updatedAt = new Date().toISOString();
     res.json(ncmMonitoringConfig);
+  });
+
+  // GET PNCP Certificate Config (A1)
+  // Regra 3: a senha do certificado nunca é devolvida ao cliente, mesmo criptografada.
+  app.get('/api/config/tenant/pncp', async (req: Request, res: Response) => {
+    try {
+      const tenantId = parseInt((req.query.tenantId as string) || '1');
+      const configs = await db.select().from(schema.tenantConfigs).where(eq(schema.tenantConfigs.tenantId, tenantId));
+      if (configs.length === 0) return res.json({});
+      const pncpConfig = configs[0].pncpConfig || {};
+      res.json({
+        certificatePath: pncpConfig.certificatePath || '',
+        isActive: pncpConfig.isActive || false,
+        hasPassword: !!pncpConfig.certificatePassword
+      });
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao buscar configuração do PNCP.' });
+    }
+  });
+
+  // PUT PNCP Certificate Config (A1)
+  app.put('/api/config/tenant/pncp', async (req: Request, res: Response) => {
+    try {
+      const tenantId = parseInt((req.body.tenantId as string) || '1');
+      const { certificatePath, certificatePassword, isActive } = req.body;
+
+      const existingConfigs = await db.select().from(schema.tenantConfigs).where(eq(schema.tenantConfigs.tenantId, tenantId));
+      const existingPncpConfig = existingConfigs[0]?.pncpConfig;
+
+      // Campo de senha vazio significa "não alterar" quando já existe uma senha salva.
+      const encryptedPassword = certificatePassword
+        ? encryptSecret(certificatePassword)
+        : (existingPncpConfig?.certificatePassword || '');
+
+      const pncpConfig = {
+        certificatePath: certificatePath || '',
+        certificatePassword: encryptedPassword,
+        isActive: isActive !== undefined ? isActive : false
+      };
+
+      if (existingConfigs.length > 0) {
+        await db.update(schema.tenantConfigs).set({ pncpConfig }).where(eq(schema.tenantConfigs.tenantId, tenantId));
+      } else {
+        await db.insert(schema.tenantConfigs).values({ tenantId, pncpConfig });
+      }
+
+      res.json({
+        certificatePath: pncpConfig.certificatePath,
+        isActive: pncpConfig.isActive,
+        hasPassword: !!pncpConfig.certificatePassword
+      });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao salvar configuração do PNCP.' });
+    }
   });
 
   // POST Add new lexical term
@@ -727,6 +792,34 @@ async function startServer() {
     }
   });
 
+  // S3 Vault Download endpoint
+  app.get('/api/editais/:id/download-s3', async (req: Request, res: Response) => {
+    try {
+      const { id } = req.params;
+      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
+      if (!edital) {
+        return res.status(404).json({ error: 'Edital não encontrado' });
+      }
+
+      if (!edital.s3StorageKey) {
+        return res.status(404).json({ error: 'Arquivo não armazenado no S3 Vault.' });
+      }
+
+      // Mock streaming response of a dummy PDF (since this is an MVP without real S3 bucket)
+      res.setHeader('Content-Type', 'application/pdf');
+      res.setHeader('Content-Disposition', `attachment; filename="${edital.processNumber.replace(/\//g, '-')}.pdf"`);
+      
+      const dummyPdfBytes = Buffer.from(
+        "%PDF-1.4\n1 0 obj\n<< /Type /Catalog /Pages 2 0 R >>\nendobj\n2 0 obj\n<< /Type /Pages /Count 1 /Kids [3 0 R] >>\nendobj\n3 0 obj\n<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>\nendobj\n4 0 obj\n<< /Length 61 >>\nstream\nBT\n/F1 12 Tf\n100 700 Td\n(Mock PDF Download do S3 Vault) Tj\nET\nendstream\nendobj\n5 0 obj\n<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>\nendobj\nxref\n0 6\n0000000000 65535 f\n0000000009 00000 n\n0000000058 00000 n\n0000000115 00000 n\n0000000244 00000 n\n0000000355 00000 n\ntrailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n443\n%%EOF\n",
+        "utf8"
+      );
+      
+      return res.send(dummyPdfBytes);
+    } catch (e) {
+      res.status(500).json({ error: 'Erro ao conectar ao S3 Vault.' });
+    }
+  });
+
   // Gemini AI Analysis endpoint
   app.post('/api/editais/:id/analyze-ai', async (req: Request, res: Response) => {
     try {
@@ -874,7 +967,7 @@ async function startServer() {
   });
 
   app.get('/api/ncm-config', (req: Request, res: Response) => {
-    res.json(INITIAL_NCM_CONFIG);
+    res.json(ncmMonitoringConfig);
   });
 
   // ==========================================

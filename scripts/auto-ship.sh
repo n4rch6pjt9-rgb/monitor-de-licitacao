@@ -3,7 +3,7 @@
 echo "🚀 [Auto-Ship] Iniciando pipeline de encerramento seguro..."
 
 # 1. Validação de Saúde e Segredos
-echo "🔍 [1/4] Executando check-health (Linter, Secrets, Build)..."
+echo "🔍 [1/4] Executando check-health (Secrets, Build)..."
 export SKIP_DIRTY_CHECK=true
 bash ./scripts/check-health.sh
 if [ $? -ne 0 ]; then

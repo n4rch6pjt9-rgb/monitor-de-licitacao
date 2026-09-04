@@ -23,6 +23,11 @@ export const tenantConfigs = pgTable('tenant_configs', {
     fieldIdLinkEdital?: string;
     isActive?: boolean;
   }>(),
+  pncpConfig: jsonb('pncp_config').$type<{
+    certificatePath?: string;
+    certificatePassword?: string;
+    isActive?: boolean;
+  }>(),
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -71,6 +76,9 @@ export const editais = pgTable('editais', {
   objectDescription: text('object_description'),
   url: text('url'),
   rawUrl: text('raw_url').notNull(),
+  s3StorageKey: text('s3_storage_key'),
+  sha256Hash: text('sha256_hash'),
+  fileSizeBytes: integer('file_size_bytes'),
   humanReviewStatus: text('human_review_status').default('PENDING'),
   reviewedBy: text('reviewed_by'),
   reviewedAt: timestamp('reviewed_at'),

@@ -11,6 +11,7 @@ import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import fs from 'fs';
 import { Agent, fetch as undiciFetch } from 'undici';
+import { decryptSecret } from '../lib/crypto';
 
 const BASE_URL = 'https://pncp.gov.br/api/consulta/v1/contratacoes/publicacao';
 
@@ -71,6 +72,7 @@ async function runCollector() {
     // Busca Keywords
     const configs = await db.select().from(schema.tenantConfigs)
       .where(eq(schema.tenantConfigs.tenantId, tenant.id));
+    let keywords: string[] = [];
     let pncpConfig;
     if (configs.length > 0) {
       if (configs[0].searchKeywords) {
@@ -130,7 +132,7 @@ async function runCollector() {
             dispatcher = new Agent({
               connect: {
                 pfx: certData,
-                passphrase: tenantWithCert.pncpConfig.certificatePassword || ''
+                passphrase: decryptSecret(tenantWithCert.pncpConfig.certificatePassword || '')
               }
             });
             console.log(`  🔒 Usando certificado do tenant ${tenantWithCert.tenantId} para coleta global...`);
@@ -142,6 +144,7 @@ async function runCollector() {
         const res = await undiciFetch(url.toString(), {
           headers: { 'Accept': 'application/json', 'User-Agent': 'Monitor-Editais-Worker-V2/1.0' },
           dispatcher: dispatcher,
+          signal: AbortSignal.timeout(15000),
         });
 
         if (!res.ok) {

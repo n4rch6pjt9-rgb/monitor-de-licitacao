@@ -44,6 +44,7 @@ export const SettingsView: React.FC = () => {
   // PNCP Config State
   const [pncpCertificatePath, setPncpCertificatePath] = useState('');
   const [pncpCertificatePassword, setPncpCertificatePassword] = useState('');
+  const [pncpHasPassword, setPncpHasPassword] = useState(false);
   const [pncpIsActive, setPncpIsActive] = useState(false);
   const [isSavingPncp, setIsSavingPncp] = useState(false);
   const [isPncpSaved, setIsPncpSaved] = useState(false);
@@ -60,7 +61,7 @@ export const SettingsView: React.FC = () => {
       if (res.ok) {
         const data = await res.json();
         setPncpCertificatePath(data.certificatePath || '');
-        setPncpCertificatePassword(data.certificatePassword || '');
+        setPncpHasPassword(!!data.hasPassword);
         setPncpIsActive(data.isActive || false);
       }
     } catch (err) {
@@ -82,6 +83,9 @@ export const SettingsView: React.FC = () => {
         })
       });
       if (res.ok) {
+        const updated = await res.json();
+        setPncpHasPassword(!!updated.hasPassword);
+        setPncpCertificatePassword('');
         setIsPncpSaved(true);
         setTimeout(() => setIsPncpSaved(false), 2500);
       }
@@ -670,13 +674,15 @@ export const SettingsView: React.FC = () => {
               </div>
 
               <div>
-                <label className="block text-sm font-semibold text-slate-700 mb-1">Senha do Certificado</label>
+                <label className="block text-sm font-semibold text-slate-700 mb-1">
+                  Senha do Certificado {pncpHasPassword && <span className="text-emerald-600 font-normal">(já configurada — deixe em branco para manter)</span>}
+                </label>
                 <div className="relative">
                   <input
                     type="password"
                     value={pncpCertificatePassword}
                     onChange={e => setPncpCertificatePassword(e.target.value)}
-                    placeholder="••••••••••••••"
+                    placeholder={pncpHasPassword ? '••••••••••••••' : 'Digite a senha do certificado'}
                     className="w-full text-sm p-2 bg-slate-50 border border-slate-200 rounded focus:bg-white focus:border-indigo-400 focus:ring-1 focus:ring-indigo-400 outline-none"
                   />
                   <KeyRound className="w-4 h-4 text-slate-400 absolute right-3 top-1/2 -translate-y-1/2 pointer-events-none" />
