@@ -1,0 +1,2 @@
+export SKIP_DIRTY_CHECK=true
+npm run check-health

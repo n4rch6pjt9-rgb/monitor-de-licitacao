@@ -70,11 +70,14 @@ export const TechnicalSpecAIView: React.FC<TechnicalSpecAIViewProps> = ({
   const [activeTab, setActiveTab] = useState<'products' | 'legal' | 'draft'>('products');
   const [filterSupplier, setFilterSupplier] = useState<string>('ALL');
 
+  const [humanReviewed, setHumanReviewed] = useState<boolean>(false);
+
   const runAnalysis = async (textToAnalyze?: string) => {
     const text = textToAnalyze || clauseInput;
     if (!text.trim()) return;
 
     setLoading(true);
+    setHumanReviewed(false); // Reset review on new analysis
     try {
       const selectedEdital = editais.find(e => e.id === selectedEditalId);
       const res = await fetch('/api/gemini/analyze-technical-specification', {
@@ -551,10 +554,26 @@ export const TechnicalSpecAIView: React.FC<TechnicalSpecAIViewProps> = ({
                   </p>
                 </div>
 
-                <div className="flex items-center gap-2">
+                <div className="flex flex-col items-end gap-2">
+                  <div className="flex items-center gap-2 bg-amber-50 border border-amber-200 px-3 py-1.5 rounded-lg">
+                    <input
+                      type="checkbox"
+                      id="human-review"
+                      checked={humanReviewed}
+                      onChange={(e) => setHumanReviewed(e.target.checked)}
+                      className="w-3.5 h-3.5 text-blue-600 rounded border-amber-300 focus:ring-blue-500 cursor-pointer"
+                    />
+                    <label htmlFor="human-review" className="text-[11px] text-amber-800 font-medium cursor-pointer flex items-center gap-1">
+                      <AlertTriangle className="w-3.5 h-3.5" />
+                      Confirmo a revisão humana desta minuta gerada por IA
+                    </label>
+                  </div>
                   <button
                     onClick={() => handleCopy(analysis.recommendedActionPlan.draftArgumentation, 'draft')}
-                    className="px-3 py-1.5 rounded-lg bg-blue-600 hover:bg-blue-500 text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 cursor-pointer"
+                    disabled={!humanReviewed}
+                    className={`px-3 py-1.5 rounded-lg text-white text-xs font-bold transition-all shadow-xs flex items-center gap-1.5 ${
+                      !humanReviewed ? 'bg-slate-400 cursor-not-allowed' : 'bg-blue-600 hover:bg-blue-500 cursor-pointer'
+                    }`}
                   >
                     {copiedSection === 'draft' ? (
                       <>

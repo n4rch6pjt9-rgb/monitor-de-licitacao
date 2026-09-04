@@ -201,6 +201,9 @@ Retorne APENAS um JSON válido seguindo estritamente este esquema:
 
       const parsed = JSON.parse(response.text?.trim() || '{}');
       if (parsed.restrictionLevel) {
+        if (parsed.recommendedActionPlan?.draftArgumentation) {
+          parsed.recommendedActionPlan.draftArgumentation += '\n\n---\n[AVISO LEGAL: Documento gerado por assistência de IA. Revisão humana obrigatória antes do uso oficial.]';
+        }
         return parsed;
       }
     } catch (err) {
@@ -259,73 +262,17 @@ Retorne APENAS um JSON válido seguindo estritamente este esquema:
     matchingSuppliersAndProducts: [
       {
         id: 'sup-mov-01',
-        brandName: 'Movement Fitness',
-        manufacturer: 'Brudden Equipamentos Ltda (Pompeia/SP)',
-        productModel: 'Esteira Profissional RT 250 G2 / Linha Perform',
+        brandName: '[DADO NÃO ENCONTRADO]',
+        manufacturer: '[DADO NÃO ENCONTRADO]',
+        productModel: '[DADO NÃO ENCONTRADO]',
         category: 'Esteiras Ergométricas Profissionais (NCM 9506.91.00)',
-        absorptionTechnologyName: 'Shock Absorber Duo (FlexWave Technology)',
-        absorptionCharacteristics: 'Sistema com 8 elastômeros helicoidais vulcanizados de dupla ação. Redução de pico de força de impacto vertical de até 36% na fase de apoio do calcanhar.',
-        impactAttenuationPercent: '36% a 40% de absorção de impacto',
-        isProprietaryModel: true,
-        marketPriceRangeEstimate: 'R$ 29.500,00 a R$ 38.900,00',
-        complianceVerdict: 'TECNOLOGIA_PROPRIETARIA',
-        notes: 'Fabricante com patente do desenho do elastômero. Possível fornecedor alvo do edital.'
-      },
-      {
-        id: 'sup-mat-02',
-        brandName: 'Matrix Fitness',
-        manufacturer: 'Johnson Health Tech Brasil (Indaiatuba/SP)',
-        productModel: 'Esteira Matrix T3x / T5x Performance Series',
-        category: 'Cardio Profissional Alta Resistência',
-        absorptionTechnologyName: 'Ultimate Deck System (Dynamic Shock Cushioning)',
-        absorptionCharacteristics: 'Deck com revestimento de cera sólida e coxins de absorção variável em poliuretano de alta densidade. Absorção superior a 42% sem perda de retorno elástico na impulsão.',
-        impactAttenuationPercent: '42% de atenuação de impacto',
+        absorptionTechnologyName: '[DADO NÃO ENCONTRADO]',
+        absorptionCharacteristics: '[DADO NÃO ENCONTRADO]',
+        impactAttenuationPercent: '[DADO NÃO ENCONTRADO]',
         isProprietaryModel: false,
-        marketPriceRangeEstimate: 'R$ 34.000,00 a R$ 46.000,00',
-        complianceVerdict: 'EQUIVALENTE_SUPERIOR',
-        notes: 'Produto equivalente e tecnicamente superior que seria indevidamente desclassificado pela exigência da nomenclatura "FlexWave Duo".'
-      },
-      {
-        id: 'sup-lf-03',
-        brandName: 'Life Fitness',
-        manufacturer: 'Life Fitness do Brasil Comércio de Equipamentos',
-        productModel: 'Esteira Elevation Series 95T / Club Series+',
-        category: 'Equipamentos Premium de Musculação e Cardio',
-        absorptionTechnologyName: 'FlexDeck Shock Absorption System (com amortecedores Lifespring)',
-        absorptionCharacteristics: '8 amortecedores de choque patenteados Lifespring™ que reduzem o impacto no joelho e articulações em até 30% em comparação com o asfalto.',
-        impactAttenuationPercent: '30% a 33% de absorção comprovada',
-        isProprietaryModel: false,
-        marketPriceRangeEstimate: 'R$ 48.000,00 a R$ 65.000,00',
+        marketPriceRangeEstimate: '[VALOR NÃO ENCONTRADO]',
         complianceVerdict: 'EQUIVALENTE_DIRETO',
-        notes: 'Amortecimento comprovado por laudos biomecânicos internacionais independentes.'
-      },
-      {
-        id: 'sup-lion-04',
-        brandName: 'Lion Fitness',
-        manufacturer: 'Lion Fitness Indústria e Comércio de Aparelhos (RS/SC)',
-        productModel: 'Esteira Profissional LF 6000 Extreme',
-        category: 'Equipamentos Nacionais de Cultura Física',
-        absorptionTechnologyName: 'Dual Elastomer Spring (DES 4.0)',
-        absorptionCharacteristics: 'Molas de elastômero duplo com travamento central, prancha naval de 25mm com lubrificação perene e amortecimento progressivo articular.',
-        impactAttenuationPercent: '35% de absorção de impacto',
-        isProprietaryModel: false,
-        marketPriceRangeEstimate: 'R$ 24.000,00 a R$ 32.000,00',
-        complianceVerdict: 'EQUIVALENTE_DIRETO',
-        notes: 'Fabricante nacional com capacidade de entrega interestadual rápida caso o prazo seja dilatado para 30 dias.'
-      },
-      {
-        id: 'sup-th-05',
-        brandName: 'Total Health',
-        manufacturer: 'Total Health Equipamentos de Ginástica (Jaboticabal/SP)',
-        productModel: 'Esteira Profissional Titanium TX8',
-        category: 'Equipamentos Profissionais de Fitness',
-        absorptionTechnologyName: 'WaveCushion Impact Dampener',
-        absorptionCharacteristics: 'Coxins em gel elastomérico com canaletas de dispersão de onda de choque. Excelente custo-benefício para prefeituras e clubes.',
-        impactAttenuationPercent: '32% de absorção',
-        isProprietaryModel: false,
-        marketPriceRangeEstimate: 'R$ 26.000,00 a R$ 33.500,00',
-        complianceVerdict: 'EQUIVALENTE_DIRETO',
-        notes: 'Atende 100% à finalidade pública esportiva do órgão com economia de até 25% no erário.'
+        notes: 'Necessária pesquisa de mercado complementar para identificar modelos reais equivalentes.'
       }
     ],
     competitiveAssessment: {
@@ -358,7 +305,10 @@ O prazo de 5 dias corridos para fabricação, transporte interestadual e montage
 Diante do exposto, requer-se o CONHECIMENTO e PROVIMENTO da presente impugnação para:
 a) Retificar o Item 4.3, permitindo a comprovação de equivalência de absorção de impacto através de laudo técnico do fabricante;
 b) Excluir a exigência de aprovação prévia antes da sessão de lances;
-c) Dilatar o prazo de entrega para no mínimo 30 (trinta) dias corridos, republicando-se o edital com a reabertura de prazos nos termos do art. 55, § 1º da Lei 14.133/2021.`
+c) Dilatar o prazo de entrega para no mínimo 30 (trinta) dias corridos, republicando-se o edital com a reabertura de prazos nos termos do art. 55, § 1º da Lei 14.133/2021.
+
+---
+[AVISO LEGAL: Documento gerado por assistência de IA. Revisão humana obrigatória antes do uso oficial.]`
     }
   };
 }

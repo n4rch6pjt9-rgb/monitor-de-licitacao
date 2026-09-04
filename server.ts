@@ -76,6 +76,27 @@ async function startServer() {
   app.use(express.json({ limit: '15mb' }));
 
   // ==========================================
+  // AUTHENTICATION MIDDLEWARE (Regra 3: Segurança Default-On)
+  // ==========================================
+  app.use('/api', (req, res, next) => {
+    const apiKey = req.headers['x-api-key'] || req.query.api_key;
+    const serverKey = process.env.MONITOR_API_KEY || 'monitor-dev-key';
+    
+    // Libera apenas o health check
+    if (req.path === '/health') {
+      return next();
+    }
+
+    if (apiKey !== serverKey) {
+      return res.status(401).json({ 
+        error: 'Unauthorized: Acesso Negado.',
+        message: 'Regra 3: API protegida. Forneça o header x-api-key válido.'
+      });
+    }
+    next();
+  });
+
+  // ==========================================
   // REST API ENDPOINTS (Placed before Vite)
   // ==========================================
 
