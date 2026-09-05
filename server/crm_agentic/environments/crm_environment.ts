@@ -1,10 +1,6 @@
-import { neon } from '@neondatabase/serverless';
-import { drizzle } from 'drizzle-orm/neon-http';
-import * as schema from '../db/schema';
+import { db } from '../../db/index';
+import * as schema from '../../db/schema';
 import { eq, desc } from 'drizzle-orm';
-
-const sql = neon(process.env.DATABASE_URL!);
-export const db = drizzle(sql, { schema });
 
 export class CRMEnvironment {
   async createDeal(tenantId: string, editalId: string, title: string, value: string): Promise<string> {
