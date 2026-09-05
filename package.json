@@ -1,4 +1,4 @@
-{
+﻿{
   "name": "react-example",
   "private": true,
   "version": "0.0.0",
@@ -14,7 +14,7 @@
     "commit": "npx git-cz",
     "push-safe": "npm run check-health && git push origin $(git branch --show-current)",
     "auto-ship": "bash ./scripts/auto-ship.sh",
-    "prepare": "husky",
+    "prepare": "node -e \"try{require('child_process').execSync('husky',{stdio:'inherit'})}catch(e){}\"",
     "worker:pncp": "tsx server/workers/pncp_collector.ts",
     "worker:sescsp": "tsx server/workers/scraper_puppeteer_sesc.ts"
   },
