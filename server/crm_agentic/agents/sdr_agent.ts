@@ -1,4 +1,5 @@
 import { tool, jsonSchema } from 'ai';
+import type { Session } from '@amplitude/ai';
 import { crmTools } from '../tools/tool_registry';
 import { generateTextWithFallback } from '../../lib/ai';
 
@@ -24,12 +25,27 @@ const tools = Object.fromEntries(
 );
 
 export class SDRAgent {
-  async processObservation(observation: string) {
+  async processObservation(observation: string, session?: Session) {
     console.log('[SDR Agent] Thinking...');
-    const { toolCalls } = await generateTextWithFallback({
+    const start = performance.now();
+    const { text, toolCalls, response, usage } = await generateTextWithFallback({
       system: SYSTEM_INSTRUCTION,
       prompt: observation,
       tools
+    });
+    const latencyMs = performance.now() - start;
+    const modelName = response?.modelId ?? 'unknown';
+    // generateTextWithFallback tenta Gemini primeiro e cai para xAI (nomes de
+    // modelo 'grok-*') — não há como saber qual respondeu além do modelId.
+    const provider = modelName.includes('grok') ? 'xai' : 'google';
+
+    session?.trackAiMessage(text || '[Ação decidida via ferramenta CRM]', modelName, provider, latencyMs, {
+      inputTokens: usage?.inputTokens ?? undefined,
+      outputTokens: usage?.outputTokens ?? undefined,
+      totalTokens: usage?.totalTokens ?? undefined,
+      toolCalls: toolCalls?.length
+        ? toolCalls.map(call => ({ name: call.toolName, arguments: call.input }))
+        : undefined,
     });
 
     if (toolCalls && toolCalls.length > 0) {

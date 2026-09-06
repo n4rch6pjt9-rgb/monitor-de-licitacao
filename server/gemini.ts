@@ -1,4 +1,5 @@
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI } from '@amplitude/ai';
+import { ai as amplitudeAI, editalAnalyzerAgent, techSpecAuditorAgent } from './lib/amplitude-ai';
 
 let geminiClient: GoogleGenAI | null = null;
 
@@ -8,11 +9,17 @@ export function getGeminiClient(): GoogleGenAI | null {
     return null;
   }
   if (!geminiClient) {
+    // Wrapper do @amplitude/ai — constrói o client @google/genai internamente
+    // e emite [Agent] AI Response automaticamente em cada generateContent(),
+    // preservando o mesmo shape de resposta (response.text).
     geminiClient = new GoogleGenAI({
+      amplitude: amplitudeAI,
       apiKey,
-      httpOptions: {
-        headers: {
-          'User-Agent': 'aistudio-build',
+      clientOptions: {
+        httpOptions: {
+          headers: {
+            'User-Agent': 'aistudio-build',
+          }
         }
       }
     });
@@ -20,7 +27,7 @@ export function getGeminiClient(): GoogleGenAI | null {
   return geminiClient;
 }
 
-export async function analyzeEditalTextWithAI(editalText: string, title?: string): Promise<{
+export async function analyzeEditalTextWithAI(editalText: string, title?: string, editalId?: string): Promise<{
   ncmDetected: string;
   ncmConfidence: 'ALTA' | 'MEDIA' | 'INCONCLUSIVA';
   ncmJustification: string;
@@ -61,7 +68,13 @@ export async function analyzeEditalTextWithAI(editalText: string, title?: string
     };
   }
 
-  try {
+  const sessionId = `edital-analyze-${editalId ?? Date.now()}`;
+  return editalAnalyzerAgent.session({ sessionId }).run(async (s) => {
+   try {
+    s.trackUserMessage(`Analisar edital para classificação NCM 9506.91: ${title ?? 'sem título'}`, {
+      context: { editalId, title },
+    });
+
     const prompt = `Você é o assistente jurídico e técnico especializado do "Monitor de Editais Municipais (SESC/SENAT/SESI / ComprasNet)".
 Seu foco estrito é a identificação do código NCM 9506.91.00 (Artigos e aparelhos para cultura física, ginástica ou atletismo) e análise de conformidade com a Lei 14.133/2021, Lei 8.666/93 e Regulamento de Licitações do Sistema S.
 
@@ -88,7 +101,7 @@ Analise o texto do edital abaixo e retorne APENAS um JSON válido no seguinte fo
 Texto do Edital:
 "${editalText.substring(0, 12000)}"`;
 
-    const response = await ai.models.generateContent({
+    const response: any = await ai.generateContent({
       model: 'gemini-3.7-flash',
       contents: prompt,
       config: {
@@ -99,7 +112,7 @@ Texto do Edital:
 
     const jsonText = response.text?.trim() || '{}';
     return JSON.parse(jsonText);
-  } catch (error) {
+   } catch (error) {
     console.error('Error generating analysis with Gemini:', error);
     return {
       ncmDetected: '9506.91.00',
@@ -110,7 +123,10 @@ Texto do Edital:
       potentialFindings: [],
       summary: 'Processamento automático concluído. Necessária revisão humana de confirmação.'
     };
-  }
+   } finally {
+    await amplitudeAI.flush();
+   }
+  });
 }
 
 export async function analyzeTechnicalSpecificationRestrictedAI(
@@ -121,7 +137,13 @@ export async function analyzeTechnicalSpecificationRestrictedAI(
 
   // If AI client is available, prompt Gemini 3.7 Flash
   if (ai) {
+   const sessionId = `tech-spec-${context?.processNumber ?? Date.now()}`;
+   const aiResult = await techSpecAuditorAgent.session({ sessionId }).run(async (s) => {
     try {
+      s.trackUserMessage(`Auditar especificação técnica restritiva${context?.editalTitle ? ' — ' + context.editalTitle : ''}`, {
+        context: { processNumber: context?.processNumber, entityName: context?.entityName },
+      });
+
       const systemPrompt = `Você é o Auditor Técnico e Jurídico de Inteligência em Licitações de Artigos e Equipamentos de Esporte e Ginástica (NCM 9506.91).
 Sua missão é realizar a engenharia reversa de cláusulas e especificações técnicas restritivas (ex: sistemas patenteados de absorção de impacto, prazos exíguos, pré-aprovação de amostras).
 
@@ -190,7 +212,7 @@ Retorne APENAS um JSON válido seguindo estritamente este esquema:
   }
 }`;
 
-      const response = await ai.models.generateContent({
+      const response: any = await ai.generateContent({
         model: 'gemini-3.7-flash',
         contents: `${systemPrompt}\n\nAnalise a seguinte especificação técnica:\n"""${clauseText}"""`,
         config: {
@@ -206,9 +228,16 @@ Retorne APENAS um JSON válido seguindo estritamente este esquema:
         }
         return parsed;
       }
+      return null;
     } catch (err) {
       console.warn('Gemini spec analysis error, falling back to specialized heuristic engine:', err);
+      return null;
+    } finally {
+      await amplitudeAI.flush();
     }
+   });
+
+   if (aiResult) return aiResult;
   }
 
   // Domain-rich specialized heuristic engine for "FlexWave Duo" and fitness absorption specs
