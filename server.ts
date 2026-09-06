@@ -1,4 +1,11 @@
 import express, { Request, Response } from 'express';
+declare global {
+  namespace Express {
+    interface Request {
+      user?: any;
+    }
+  }
+}
 import path from 'path';
 import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
@@ -9,6 +16,8 @@ import * as schema from './server/db/schema.js';
 import { eq, ilike, or, desc, sql } from 'drizzle-orm';
 import { crmRouter } from './server/routes/crm.js';
 import { encryptSecret } from './server/lib/crypto.js';
+import { verifyPassword } from './server/lib/password.js';
+import jwt from 'jsonwebtoken';
 
 dotenv.config();
 
@@ -62,8 +71,14 @@ let schedulerState: SchedulerState = {
 };
 
 async function startServer() {
-  // Fail-fast: require MONITOR_API_KEY in production (fail-closed auth)
+  // Fail-fast: require secrets in production (fail-closed auth)
   if (process.env.NODE_ENV === 'production') {
+    if (!process.env.JWT_SECRET) {
+      throw new Error(
+        'ERRO CRÍTICO: JWT_SECRET não está configurada em produção. ' +
+        'Configure JWT_SECRET como uma string aleatória forte nas variáveis de ambiente e reinicie.'
+      );
+    }
     if (!process.env.MONITOR_API_KEY) {
       throw new Error(
         'ERRO CRÍTICO: MONITOR_API_KEY não está configurada em produção. ' +
@@ -77,21 +92,80 @@ async function startServer() {
 
   app.use(express.json({ limit: '15mb' }));
 
+  // Rotas públicas (login)
+  app.post('/api/auth/login', async (req: Request, res: Response) => {
+    const { email, password } = req.body;
+
+    if (!email || !password) {
+      return res.status(400).json({ error: 'E-mail e senha são obrigatórios.' });
+    }
+
+    try {
+      const rows = await db.select().from(schema.users).where(eq(schema.users.email, email));
+      const dbUser = rows[0];
+
+      if (!dbUser || !verifyPassword(password, dbUser.passwordHash)) {
+        return res.status(401).json({ error: 'Credenciais inválidas' });
+      }
+
+      const user = {
+        id: dbUser.id,
+        name: dbUser.name,
+        email: dbUser.email,
+        tenantId: dbUser.tenantId
+      };
+
+      const token = jwt.sign(user, process.env.JWT_SECRET!, { expiresIn: '12h' });
+      return res.json({ token, user });
+    } catch (e) {
+      console.error('[Auth Login Error]:', e);
+      return res.status(500).json({ error: 'Erro ao autenticar.' });
+    }
+  });
+
   // ==========================================
   // AUTHENTICATION MIDDLEWARE (Regra 3: Segurança Default-On)
+  // JWT (tenant-scoped) OR fail-closed API key (workers/CRM).
   // Fail-closed: API key authenticates only when MONITOR_API_KEY and
   // the request header/query are both non-empty and equal.
   // ==========================================
-  app.use('/api', (req, res, next) => {
+  app.use('/api', (req: Request, res, next) => {
+    const authHeader = req.headers['authorization'];
     const rawKey = req.headers['x-api-key'] || req.query.api_key;
     const apiKey = typeof rawKey === 'string' ? rawKey : undefined;
     const serverKey = process.env.MONITOR_API_KEY;
+    const jwtSecret = process.env.JWT_SECRET;
 
-    // Libera apenas o health check
-    if (req.path === '/health') {
+    // Libera health check e login
+    if (req.path === '/health' || req.path === '/auth/login') {
       return next();
     }
 
+    // JWT first — tenantId comes from verified claims
+    if (authHeader && authHeader.startsWith('Bearer ')) {
+      const token = authHeader.split(' ')[1];
+      if (!jwtSecret || jwtSecret.length === 0) {
+        return res.status(401).json({
+          error: 'Unauthorized: Token JWT Inválido ou Expirado.',
+        });
+      }
+      try {
+        const decoded = jwt.verify(token, jwtSecret) as any;
+        if (decoded == null || typeof decoded.tenantId !== 'number') {
+          return res.status(401).json({
+            error: 'Unauthorized: Token JWT Inválido ou Expirado.',
+          });
+        }
+        req.user = decoded;
+        return next();
+      } catch (err) {
+        return res.status(401).json({
+          error: 'Unauthorized: Token JWT Inválido ou Expirado.',
+        });
+      }
+    }
+
+    // Fail-closed API key (workers / CRM webhook) — default tenant 1 for service calls
     if (
       !serverKey ||
       serverKey.length === 0 ||
@@ -101,9 +175,10 @@ async function startServer() {
     ) {
       return res.status(401).json({
         error: 'Unauthorized: Acesso Negado.',
-        message: 'Regra 3: API protegida. Forneça o header x-api-key válido.'
+        message: 'Regra 3: API protegida. Forneça o header Authorization Bearer ou x-api-key válido.'
       });
     }
+    req.user = { tenantId: 1 };
     next();
   });
 
@@ -130,7 +205,7 @@ async function startServer() {
   // Sources endpoints
   app.get('/api/sources', async (req: Request, res: Response) => {
     try {
-      const data = await db.select().from(schema.sources).where(eq(schema.sources.tenantId, 1));
+      const data = await db.select().from(schema.sources).where(eq(schema.sources.tenantId, req.user!.tenantId));
       res.json(data);
     } catch (e) {
       res.status(500).json({ error: 'Erro ao buscar fontes.' });
@@ -142,7 +217,7 @@ async function startServer() {
     try {
       const newSource = {
         id: body.id || `src-custom-${Date.now()}`,
-        tenantId: 1,
+        tenantId: req.user!.tenantId,
         name: body.name || 'Nova Fonte',
         category: body.category || 'Prefeitura',
         type: body.type || 'SCRAPER',
@@ -170,6 +245,52 @@ async function startServer() {
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'Erro ao salvar fonte.' });
+    }
+  });
+
+  app.put('/api/sources/:id', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    const body = req.body;
+    try {
+      const [updated] = await db.update(schema.sources)
+        .set({
+          name: body.name,
+          category: body.category,
+          type: body.type,
+          uf: body.uf,
+          city: body.city,
+          endpointOrUrl: body.endpointOrUrl,
+          selectorOrParams: body.selectorOrParams,
+          authType: body.authType,
+          notes: body.notes
+        })
+        .where(sql`${schema.sources.id} = ${id} AND ${schema.sources.tenantId} = ${req.user!.tenantId}`)
+        .returning();
+
+      if (!updated) {
+        return res.status(404).json({ error: 'Fonte não encontrada.' });
+      }
+      res.json(updated);
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao atualizar fonte.' });
+    }
+  });
+
+  app.delete('/api/sources/:id', async (req: Request, res: Response) => {
+    const { id } = req.params;
+    try {
+      const [deleted] = await db.delete(schema.sources)
+        .where(sql`${schema.sources.id} = ${id} AND ${schema.sources.tenantId} = ${req.user!.tenantId}`)
+        .returning();
+
+      if (!deleted) {
+        return res.status(404).json({ error: 'Fonte não encontrada.' });
+      }
+      res.json({ success: true });
+    } catch (e) {
+      console.error(e);
+      res.status(500).json({ error: 'Erro ao excluir fonte.' });
     }
   });
 
@@ -216,7 +337,7 @@ async function startServer() {
   app.get('/api/editais', async (req: Request, res: Response) => {
     try {
       const { category, search, status, ncm } = req.query;
-      let conditions = [eq(schema.editais.tenantId, 1)];
+      let conditions = [eq(schema.editais.tenantId, req.user!.tenantId)];
 
       if (category && category !== 'ALL') {
         conditions.push(eq(schema.editais.sourceCategory, String(category)));
@@ -255,7 +376,7 @@ async function startServer() {
 
   app.get('/api/editais/:id', async (req: Request, res: Response) => {
     try {
-      const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, req.params.id));
+      const [edital] = await db.select().from(schema.editais).where(sql`${schema.editais.id} = ${req.params.id} AND ${schema.editais.tenantId} = ${req.user!.tenantId}`);
       if (!edital) {
         return res.status(404).json({ error: 'Edital não encontrado' });
       }
