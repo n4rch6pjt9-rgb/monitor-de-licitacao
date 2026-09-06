@@ -62,34 +62,53 @@ let schedulerState: SchedulerState = {
 };
 
 async function startServer() {
+  // Fail-fast: require MONITOR_API_KEY in production (fail-closed auth)
+  if (process.env.NODE_ENV === 'production') {
+    if (!process.env.MONITOR_API_KEY) {
+      throw new Error(
+        'ERRO CRÍTICO: MONITOR_API_KEY não está configurada em produção. ' +
+        'Configure MONITOR_API_KEY nas variáveis de ambiente e reinicie.'
+      );
+    }
+  }
+
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
   app.use(express.json({ limit: '15mb' }));
 
-  // Registrar rotas de CRM
-  app.use('/api/crm', crmRouter);
-
   // ==========================================
   // AUTHENTICATION MIDDLEWARE (Regra 3: Segurança Default-On)
+  // Fail-closed: API key authenticates only when MONITOR_API_KEY and
+  // the request header/query are both non-empty and equal.
   // ==========================================
   app.use('/api', (req, res, next) => {
-    const apiKey = req.headers['x-api-key'] || req.query.api_key;
-    const serverKey = process.env.MONITOR_API_KEY || 'monitor-dev-key';
-    
+    const rawKey = req.headers['x-api-key'] || req.query.api_key;
+    const apiKey = typeof rawKey === 'string' ? rawKey : undefined;
+    const serverKey = process.env.MONITOR_API_KEY;
+
     // Libera apenas o health check
     if (req.path === '/health') {
       return next();
     }
 
-    if (apiKey !== serverKey) {
-      return res.status(401).json({ 
+    if (
+      !serverKey ||
+      serverKey.length === 0 ||
+      !apiKey ||
+      apiKey.length === 0 ||
+      apiKey !== serverKey
+    ) {
+      return res.status(401).json({
         error: 'Unauthorized: Acesso Negado.',
         message: 'Regra 3: API protegida. Forneça o header x-api-key válido.'
       });
     }
     next();
   });
+
+  // Registrar rotas de CRM (após middleware de autenticação)
+  app.use('/api/crm', crmRouter);
 
   // ==========================================
   // REST API ENDPOINTS (Placed before Vite)
@@ -294,7 +313,7 @@ async function startServer() {
           // Tentativa de Envio para Ploomes Externo
           await fetch(`${req.protocol}://${req.get('host')}/api/crm/sync`, {
             method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.MONITOR_API_KEY || 'monitor-dev-key' },
+            headers: { 'Content-Type': 'application/json', 'x-api-key': process.env.MONITOR_API_KEY! },
             body: JSON.stringify({ editalId: id, tenantId: edital.tenantId })
           });
         } catch (crmErr) {
