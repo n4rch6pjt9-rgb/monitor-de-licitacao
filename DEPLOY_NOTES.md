@@ -117,3 +117,19 @@ Quando decidir colocar os workers para rodar em produção, é preciso: remover
 `PUPPETEER_SKIP_DOWNLOAD`, instalar as libs de sistema que o Chromium exige
 (a base Debian já ajuda aqui) e adicionar os serviços de worker no
 `docker-compose.licitacoes.yml` (ou um agendamento via `node-cron`).
+
+## 4b. Status cutover Monitor (2026-09-06)
+
+Feito na VPS:
+- Container `licitacoes-licitacoes-1` healthy; alias Docker `licitacoes-api:3000`
+- Regra adicionada em `/opt/gymsite/cloudflared/config.yml` para `licitacoes-gymsite.com.br` → `http://licitacoes-api:3000` (backup `.bak.licitacoes`)
+- Health local: `GET /api/health` → 200
+
+Bloqueado / manual (Marcelo):
+- O `cloudflared` desta VPS aplica **config remota** do Zero Trust (`Updated to new configuration … version=7`), que **sobrescreve** o ingress local. A regra do yaml ainda não entra em vigor até existir o Public Hostname no painel.
+- `cloudflared tunnel route dns` falha sem `cert.pem` (origin cert) no container — não há `cloudflared login` nesta máquina.
+- **Ação:** Cloudflare Zero Trust → Networks → Tunnels → tunnel `12675577-d94b-4a19-b1df-a86713dbaf80` → Public Hostname:
+  - Hostname: `licitacoes-gymsite.com.br`
+  - Service: `http://licitacoes-api:3000`
+- Ou CNAME DNS: `licitacoes-gymsite.com.br` → `12675577-d94b-4a19-b1df-a86713dbaf80.cfargotunnel.com` (proxied) **e** a mesma hostname no tunnel remoto.
+- Teste final: `curl -I https://licitacoes-gymsite.com.br/api/health` → 200
