@@ -1,4 +1,4 @@
-# Notas de Deploy — Monitor de Licitações na VPS gymsite-api
+﻿# Notas de Deploy — Monitor de Licitações na VPS gymsite-api
 
 Passo a passo para colocar o Monitor de Licitações rodando na mesma VPS Hetzner
 que já hospeda o `gymsite-api` (CX33, 4 vCPU / 8 GB — confirmado com folga de
@@ -48,11 +48,10 @@ repositório, e crie `/opt/licitacoes/.env.production` com:
 ```
 GEMINI_API_KEY=...
 DATABASE_URL=postgres://... (a connection string do seu Neon)
-APP_URL=https://licitacoes.SEUDOMINIO.com.br
+APP_URL=https://licitacoes-gymsite.com.br
 ```
 
-(troque `SEUDOMINIO.com.br` pelo domínio real que você quer usar — não sei
-qual é, então usei um placeholder em todos os arquivos.)
+(domínio de produção)
 
 ## 3. Subir o container pela primeira vez
 
@@ -72,7 +71,7 @@ Edite (como root) `/opt/gymsite/cloudflared/config.yml` e adicione uma entrada
 Tunnel usa a primeira regra que casar):
 
 ```yaml
-  - hostname: licitacoes.SEUDOMINIO.com.br
+  - hostname: licitacoes-gymsite.com.br
     service: http://licitacoes-api:3000
     originRequest:
       connectTimeout: 30s
@@ -84,14 +83,14 @@ Depois:
 
 ```bash
 # cria a rota DNS do túnel pro novo hostname (uma vez só)
-docker exec gymsite-cloudflared-1 cloudflared tunnel route dns 12675577-d94b-4a19-b1df-a86713dbaf80 licitacoes.SEUDOMINIO.com.br
+docker exec gymsite-cloudflared-1 cloudflared tunnel route dns 12675577-d94b-4a19-b1df-a86713dbaf80 licitacoes-gymsite.com.br
 
 # aplica o config.yml novo reiniciando só o cloudflared (não mexe no gymsite-api)
 cd /opt/gymsite
 docker compose -f docker-compose.prod.yml restart cloudflared
 ```
 
-Teste: `curl -I https://licitacoes.SEUDOMINIO.com.br/api/health` deve responder `200`.
+Teste: `curl -I https://licitacoes-gymsite.com.br/api/health` deve responder `200`.
 
 ## 5. Configurar os secrets do GitHub Actions
 

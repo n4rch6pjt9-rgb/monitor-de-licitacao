@@ -1,4 +1,4 @@
-# PRD: Deploy na Infraestrutura Hetzner (VPS)
+﻿# PRD: Deploy na Infraestrutura Hetzner (VPS)
 
 **Versão 2.0** — reescrito após inspeção real do servidor `gymsite-api` em
 04/09/2026 (via SSH, comandos somente-leitura: `ss -tlnp`, `docker ps -a`,
@@ -99,7 +99,7 @@ que o Puppeteer realmente consumir na prática.
 ## 4. Fluxo de CI/CD
 
 GitHub Actions builda a imagem, publica em
-`ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao` e faz deploy via SSH para um
+`ghcr.io/monitor-licitacao/monitor-de-licitacao` e faz deploy via SSH para um
 usuário **`deploy`** dedicado (membro do grupo `docker`, não root), usando uma
 chave SSH própria do CI — nunca a chave pessoal do desenvolvedor.
 
@@ -129,7 +129,7 @@ container — aceitável para uma ferramenta interna B2B.
 - [x] Workflow `.github/workflows/deploy.yml` (build + push GHCR + deploy SSH)
 - [x] `DEPLOY_NOTES.md` com o passo a passo manual de primeira configuração
 - [ ] Criar usuário `deploy` na VPS e chave SSH dedicada (passo manual, ver DEPLOY_NOTES.md)
-- [ ] Definir o domínio real a usar (hoje os arquivos usam `licitacoes.SEUDOMINIO.com.br` como placeholder)
+- [x] Domínio definido: `licitacoes-gymsite.com.br`
 - [ ] Criar `/opt/licitacoes/.env.production` na VPS com as chaves reais
 - [ ] Adicionar a regra de `ingress` no `cloudflared/config.yml` e rotear o DNS do túnel
 - [ ] Criar swap de 2–4 GB na VPS como margem de segurança
