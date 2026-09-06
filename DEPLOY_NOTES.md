@@ -48,7 +48,7 @@ repositório, e crie `/opt/licitacoes/.env.production` com:
 ```
 GEMINI_API_KEY=...
 DATABASE_URL=postgres://... (a connection string do seu Neon)
-APP_URL=https://licitacoes-gymsite.com.br
+APP_URL=https://licitacoes.getgymsite.com.br
 ```
 
 (domínio de produção)
@@ -71,7 +71,7 @@ Edite (como root) `/opt/gymsite/cloudflared/config.yml` e adicione uma entrada
 Tunnel usa a primeira regra que casar):
 
 ```yaml
-  - hostname: licitacoes-gymsite.com.br
+  - hostname: licitacoes.getgymsite.com.br
     service: http://licitacoes-api:3000
     originRequest:
       connectTimeout: 30s
@@ -83,14 +83,14 @@ Depois:
 
 ```bash
 # cria a rota DNS do túnel pro novo hostname (uma vez só)
-docker exec gymsite-cloudflared-1 cloudflared tunnel route dns 12675577-d94b-4a19-b1df-a86713dbaf80 licitacoes-gymsite.com.br
+docker exec gymsite-cloudflared-1 cloudflared tunnel route dns 12675577-d94b-4a19-b1df-a86713dbaf80 licitacoes.getgymsite.com.br
 
 # aplica o config.yml novo reiniciando só o cloudflared (não mexe no gymsite-api)
 cd /opt/gymsite
 docker compose -f docker-compose.prod.yml restart cloudflared
 ```
 
-Teste: `curl -I https://licitacoes-gymsite.com.br/api/health` deve responder `200`.
+Teste: `curl -I https://licitacoes.getgymsite.com.br/api/health` deve responder `200`.
 
 ## 5. Configurar os secrets do GitHub Actions
 
@@ -122,14 +122,20 @@ Quando decidir colocar os workers para rodar em produção, é preciso: remover
 
 Feito na VPS:
 - Container `licitacoes-licitacoes-1` healthy; alias Docker `licitacoes-api:3000`
-- Regra adicionada em `/opt/gymsite/cloudflared/config.yml` para `licitacoes-gymsite.com.br` → `http://licitacoes-api:3000` (backup `.bak.licitacoes`)
+- Regra adicionada em `/opt/gymsite/cloudflared/config.yml` para `licitacoes.getgymsite.com.br` → `http://licitacoes-api:3000` (backup `.bak.licitacoes`)
 - Health local: `GET /api/health` → 200
 
 Bloqueado / manual (Marcelo):
 - O `cloudflared` desta VPS aplica **config remota** do Zero Trust (`Updated to new configuration … version=7`), que **sobrescreve** o ingress local. A regra do yaml ainda não entra em vigor até existir o Public Hostname no painel.
 - `cloudflared tunnel route dns` falha sem `cert.pem` (origin cert) no container — não há `cloudflared login` nesta máquina.
 - **Ação:** Cloudflare Zero Trust → Networks → Tunnels → tunnel `12675577-d94b-4a19-b1df-a86713dbaf80` → Public Hostname:
-  - Hostname: `licitacoes-gymsite.com.br`
+  - Hostname: `licitacoes.getgymsite.com.br`
   - Service: `http://licitacoes-api:3000`
-- Ou CNAME DNS: `licitacoes-gymsite.com.br` → `12675577-d94b-4a19-b1df-a86713dbaf80.cfargotunnel.com` (proxied) **e** a mesma hostname no tunnel remoto.
-- Teste final: `curl -I https://licitacoes-gymsite.com.br/api/health` → 200
+- Ou CNAME DNS: `licitacoes.getgymsite.com.br` → `12675577-d94b-4a19-b1df-a86713dbaf80.cfargotunnel.com` (proxied) **e** a mesma hostname no tunnel remoto.
+- Teste final: `curl -I https://licitacoes.getgymsite.com.br/api/health` → 200
+
+## 4c. Host live (2026-09-06)
+
+- **Produção atual:** `https://licitacoes.getgymsite.com.br` (CNAME na zona getgymsite → túnel; ingress remoto Zero Trust → `http://licitacoes-api:3000`).
+- Health: `GET /api/health` → 200.
+- `licitacoes-gymsite.com.br` fica como hostname futuro só quando a zona existir nesta conta Cloudflare; o ingress remoto já pode incluir os dois.
