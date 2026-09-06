@@ -8,7 +8,9 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../db/schema';
 import puppeteer from 'puppeteer';
+import { withBrowserPage } from '../lib/browser';
 import { eq, inArray } from 'drizzle-orm';
+import { SESC_SELECTORS } from '../lib/sescSelectors';
 
 const URL_SESC_SP_MURAL = 'https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx';
 
@@ -81,35 +83,29 @@ async function runSescPuppeteerScraper() {
   console.log(`🏢 Carregadas regras para ${tenantRules.length} tenants ativos.`);
   let newInsertions = 0;
 
-  const browser = await puppeteer.launch({
-    headless: true,
-    args: ['--no-sandbox', '--disable-setuid-sandbox']
-  });
-
   try {
-    const page = await browser.newPage();
-    await page.setUserAgent('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/115.0.0.0 Safari/537.36');
+    await withBrowserPage(async (page) => {
     
     console.log(`  Navegando para ${URL_SESC_SP_MURAL}...`);
     await page.goto(URL_SESC_SP_MURAL, { waitUntil: 'networkidle2', timeout: 60000 });
 
     console.log(`  Aguardando carregamento da tabela de dados...`);
-    await page.waitForSelector('tbody tr', { timeout: 30000 });
+    await page.waitForSelector(SESC_SELECTORS.row, { timeout: 30000 });
 
-    const rowsData = await page.evaluate(() => {
-      const rows = Array.from(document.querySelectorAll('tbody tr'));
+    const rowsData = await page.evaluate((selectors) => {
+      const rows = Array.from(document.querySelectorAll(selectors.row));
       return rows.map(tr => {
         const tds = tr.querySelectorAll('td');
         if (tds.length < 6) return null;
         return {
-          processNumber: tds[1]?.textContent?.trim() || '',
-          agency: tds[2]?.textContent?.trim() || '',
-          objectDesc: tds[3]?.textContent?.trim() || '',
-          modalidade: tds[4]?.textContent?.trim() || '',
-          dateStr: tds[5]?.textContent?.trim() || '',
+          processNumber: tds[selectors.columns.processNumber]?.textContent?.trim() || '',
+          agency: tds[selectors.columns.agency]?.textContent?.trim() || '',
+          objectDesc: tds[selectors.columns.objectDesc]?.textContent?.trim() || '',
+          modalidade: tds[selectors.columns.modalidade]?.textContent?.trim() || '',
+          dateStr: tds[selectors.columns.dateStr]?.textContent?.trim() || '',
         };
       }).filter(r => r !== null);
-    });
+    }, SESC_SELECTORS);
 
     console.log(`  Encontrados ${rowsData.length} registros na página usando Puppeteer!`);
 
@@ -167,10 +163,9 @@ async function runSescPuppeteerScraper() {
       }
     }
 
+    });
   } catch (error: any) {
     console.error(`❌ Erro no Scraper Puppeteer: ${error.message}`);
-  } finally {
-    await browser.close();
   }
 
   try {

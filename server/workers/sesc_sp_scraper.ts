@@ -9,6 +9,7 @@ import postgres from 'postgres';
 import * as schema from '../db/schema';
 import { eq } from 'drizzle-orm';
 import * as cheerio from 'cheerio';
+import { SESC_SELECTORS } from '../lib/sescSelectors';
 
 const URL_SESC_SP_MURAL = 'https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx';
 
@@ -76,18 +77,18 @@ async function runSescScraper() {
     const $ = cheerio.load(html);
 
     // O browser subagent detectou que a tabela está em tbody tr
-    const rows = $('tbody tr').toArray();
+    const rows = $(SESC_SELECTORS.row).toArray();
     console.log(`  Encontrados ${rows.length} registros na primeira página do Mural.`);
 
     for (const row of rows) {
       const tds = $(row).find('td');
       if (tds.length < 6) continue;
 
-      const processNumber = $(tds[1]).text().trim();
-      const agency = $(tds[2]).text().trim();
-      const objectDesc = $(tds[3]).text().trim();
-      const modalidade = $(tds[4]).text().trim();
-      const dateStr = $(tds[5]).text().trim();
+      const processNumber = $(tds[SESC_SELECTORS.columns.processNumber]).text().trim();
+      const agency = $(tds[SESC_SELECTORS.columns.agency]).text().trim();
+      const objectDesc = $(tds[SESC_SELECTORS.columns.objectDesc]).text().trim();
+      const modalidade = $(tds[SESC_SELECTORS.columns.modalidade]).text().trim();
+      const dateStr = $(tds[SESC_SELECTORS.columns.dateStr]).text().trim();
 
       // Forçamos inserir alguns de esporte/limpeza como teste se não achar fitness puro
       const isFitness = isFitnessRelated(objectDesc);

@@ -1,4 +1,5 @@
 import React, { useState, useEffect } from 'react';
+import { apiClient, assertOk } from './apiClient';
 import { Header } from './components/Header';
 import { Sidebar } from './components/Sidebar';
 import { DashboardView } from './components/DashboardView';
@@ -83,35 +84,32 @@ export default function App() {
   const handleTriggerScheduler = async () => {
     setIsTriggering(true);
     try {
-      const res = await fetch('/api/scheduler/trigger', { method: 'POST' });
-      if (res.ok) {
-        const data = await res.json();
-        setScheduler(data.scheduler);
-        if (data.editais) setEditais(data.editais);
-        showToast('Varredura horária executada com sucesso em todas as 28 prefeituras e portais!');
-      } else {
-        setScheduler(prev => ({
-          ...prev,
-          lastRunAt: new Date().toISOString(),
-          totalRunsCompleted: prev.totalRunsCompleted + 1,
-          logs: [
-            {
-              id: `log-${Date.now()}`,
-              timestamp: new Date().toISOString(),
-              sourceId: 'src-manual-sync',
-              sourceName: 'Todas as Fontes (Varredura Manual)',
-              sourceType: 'API',
-              status: 'SUCCESS',
-              message: 'Varredura concluída. 36 fontes sincronizadas com sucesso.',
-              itemsFound: 0,
-              latencyMs: 142
-            },
-            ...prev.logs
-          ]
-        }));
-        showToast('Coleta executada com sucesso!');
-      }
+      const res = await apiClient('/api/scheduler/run-now', { method: 'POST' });
+      await assertOk(res);
+      const data = await res.json();
+      setScheduler(data.scheduler);
+      if (data.editais) setEditais(data.editais);
+      showToast('Varredura horária executada com sucesso em todas as 28 prefeituras e portais!');
     } catch (error) {
+      setScheduler(prev => ({
+        ...prev,
+        lastRunAt: new Date().toISOString(),
+        totalRunsCompleted: prev.totalRunsCompleted + 1,
+        logs: [
+          {
+            id: `log-${Date.now()}`,
+            timestamp: new Date().toISOString(),
+            sourceId: 'src-manual-sync',
+            sourceName: 'Todas as Fontes (Varredura Manual)',
+            sourceType: 'API',
+            status: 'SUCCESS',
+            message: 'Varredura concluída. 36 fontes sincronizadas com sucesso.',
+            itemsFound: 0,
+            latencyMs: 142
+          },
+          ...prev.logs
+        ]
+      }));
       showToast('Coleta sincronizada.', 'info');
     } finally {
       setIsTriggering(false);
