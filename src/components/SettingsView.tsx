@@ -17,12 +17,18 @@ import {
   SlidersHorizontal,
   FileText,
   KeyRound,
-  FileKey
+  FileKey,
+  Layers
 } from 'lucide-react';
 import { LexicalTerm, NCMConfig, NCMClassificationResult } from '../types';
+import { StatusCatalogView } from './mural/StatusCatalogView';
 
-export const SettingsView: React.FC = () => {
-  const [activeTab, setActiveTab] = useState<'ncm' | 'pncp'>('ncm');
+interface SettingsViewProps {
+  initialTab?: 'status-catalog' | 'ncm' | 'pncp';
+}
+
+export const SettingsView: React.FC<SettingsViewProps> = ({ initialTab = 'status-catalog' }) => {
+  const [activeTab, setActiveTab] = useState<'status-catalog' | 'ncm' | 'pncp'>(initialTab);
 
   // NCM State
   const [config, setConfig] = useState<NCMConfig | null>(null);
@@ -214,18 +220,31 @@ export const SettingsView: React.FC = () => {
 
       <div className="flex items-center gap-1 bg-slate-200 p-1 rounded-lg w-fit">
         <button
+          onClick={() => setActiveTab('status-catalog')}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors flex items-center gap-1.5 min-h-[36px] ${activeTab === 'status-catalog' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
+        >
+          <Layers className="w-3.5 h-3.5" />
+          <span>Catálogo de Status</span>
+        </button>
+        <button
           onClick={() => setActiveTab('ncm')}
-          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors ${activeTab === 'ncm' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors min-h-[36px] ${activeTab === 'ncm' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
         >
           Motor Semântico (NCM)
         </button>
         <button
           onClick={() => setActiveTab('pncp')}
-          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors ${activeTab === 'pncp' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
+          className={`px-4 py-1.5 text-xs font-semibold rounded-md transition-colors min-h-[36px] ${activeTab === 'pncp' ? 'bg-white text-blue-700 shadow-xs' : 'text-slate-500 hover:text-slate-700'}`}
         >
           Integração PNCP (Certificados)
         </button>
       </div>
+
+      {activeTab === 'status-catalog' && (
+        <div className="animate-in fade-in duration-200">
+          <StatusCatalogView />
+        </div>
+      )}
 
       {activeTab === 'ncm' && (
       <>

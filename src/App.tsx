@@ -31,8 +31,16 @@ import {
   INITIAL_SCHEDULER 
 } from './data/initialData';
 
+function getProcessCodigoFromPath(): string | null {
+  if (typeof window === 'undefined') return null;
+  const match = window.location.pathname.match(/^\/processos\/([^/]+)/);
+  return match ? decodeURIComponent(match[1]) : null;
+}
+
 export default function App() {
-  const [activeTab, setActiveTab] = useState('crm');
+  const initialCodigo = getProcessCodigoFromPath();
+  const [activeTab, setActiveTab] = useState(initialCodigo ? 'editais' : 'editais');
+  const [selectedProcessCodigo, setSelectedProcessCodigo] = useState<string | null>(initialCodigo);
   
   // App Domain State
   const [sources, setSources] = useState<Source[]>(INITIAL_SOURCES);
@@ -298,11 +306,45 @@ export default function App() {
     setActiveTab('tech-spec-ai');
   };
 
+  // Sync with browser URL navigation (/processos/:codigo)
+  useEffect(() => {
+    const handlePopState = () => {
+      const codigo = getProcessCodigoFromPath();
+      setSelectedProcessCodigo(codigo);
+      if (codigo) {
+        setActiveTab('editais');
+      }
+    };
+    window.addEventListener('popstate', handlePopState);
+    return () => window.removeEventListener('popstate', handlePopState);
+  }, []);
+
+  const handleSelectProcessCodigo = (codigo: string | null) => {
+    setSelectedProcessCodigo(codigo);
+    if (codigo) {
+      setActiveTab('editais');
+      if (window.location.pathname !== `/processos/${codigo}`) {
+        window.history.pushState(null, '', `/processos/${codigo}`);
+      }
+    } else {
+      if (window.location.pathname.startsWith('/processos/')) {
+        window.history.pushState(null, '', '/');
+      }
+    }
+  };
+
   const handleSelectEdital = (edital: Edital | null) => {
     setSelectedEdital(edital);
     if (edital && activeTab !== 'editais' && activeTab !== 'dashboard') {
       setActiveTab('editais');
     }
+  };
+
+  const handleNavigateTab = (tab: string) => {
+    if (tab === 'editais' && activeTab === 'editais' && selectedProcessCodigo) {
+      handleSelectProcessCodigo(null);
+    }
+    setActiveTab(tab);
   };
 
   const pendingReviewCount = editais.filter(e => e.humanReviewStatus === 'PENDING').length;
@@ -326,12 +368,12 @@ export default function App() {
 
       {/* Main App Layout */}
       <div className="flex flex-1 overflow-hidden h-screen">
-        <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} pendingReviewCount={pendingReviewCount} />
+        <Sidebar activeTab={activeTab} setActiveTab={handleNavigateTab} pendingReviewCount={pendingReviewCount} />
         
         <div className="flex-1 flex flex-col overflow-hidden relative">
           <Header
             activeTab={activeTab}
-            setActiveTab={setActiveTab}
+            setActiveTab={handleNavigateTab}
             scheduler={scheduler}
             onTriggerScheduler={handleTriggerScheduler}
             pendingReviewCount={pendingReviewCount}
@@ -366,6 +408,8 @@ export default function App() {
 
             {activeTab === 'editais' && (
               <EditaisView
+                selectedProcessCodigo={selectedProcessCodigo}
+                onSelectProcessCodigo={handleSelectProcessCodigo}
                 editais={editais}
                 selectedEdital={selectedEdital}
                 onSelectEdital={handleSelectEdital}
