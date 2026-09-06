@@ -8,7 +8,7 @@ import { drizzle } from 'drizzle-orm/postgres-js';
 import postgres from 'postgres';
 import * as schema from '../db/schema';
 import puppeteer from 'puppeteer';
-import { eq } from 'drizzle-orm';
+import { eq, inArray } from 'drizzle-orm';
 
 const URL_SESC_SP_MURAL = 'https://scr360.paradigmabs.com.br/sescsp/portal/Mural.aspx';
 
@@ -44,26 +44,36 @@ async function runSescPuppeteerScraper() {
     process.exit(1);
   }
 
-  const tenantRules: TenantRule[] = [];
-  
-  for (const tenant of tenants) {
-    const ncms = await db.select().from(schema.tenantNcms)
-      .where(eq(schema.tenantNcms.tenantId, tenant.id));
-    const activeNcms = ncms.filter(n => n.active).map(n => n.code.trim().toLowerCase());
+  // Batch-load NCMs + configs (2 queries total) then group in memory - avoids N+1 / 2T round-trips (#8 E1 / Q3)
+  const tenantIds = tenants.map((t) => t.id);
 
-    const configs = await db.select().from(schema.tenantConfigs)
-      .where(eq(schema.tenantConfigs.tenantId, tenant.id));
-    let keywords: string[] = [];
-    if (configs.length > 0 && configs[0].searchKeywords) {
-      keywords = configs[0].searchKeywords.map((k: string) => k.toLowerCase().trim());
-    }
+  const [allNcms, allConfigs] = await Promise.all([
+    db.select().from(schema.tenantNcms).where(inArray(schema.tenantNcms.tenantId, tenantIds)),
+    db.select().from(schema.tenantConfigs).where(inArray(schema.tenantConfigs.tenantId, tenantIds)),
+  ]);
 
-    tenantRules.push({
-      tenantId: tenant.id,
-      keywords,
-      ncms: activeNcms
-    });
+  const ncmsByTenant = new Map<number, string[]>();
+  for (const n of allNcms) {
+    if (!n.active) continue;
+    const list = ncmsByTenant.get(n.tenantId) ?? [];
+    list.push(n.code.trim().toLowerCase());
+    ncmsByTenant.set(n.tenantId, list);
   }
+
+  const keywordsByTenant = new Map<number, string[]>();
+  for (const c of allConfigs) {
+    if (!c.searchKeywords) continue;
+    keywordsByTenant.set(
+      c.tenantId,
+      c.searchKeywords.map((k: string) => k.toLowerCase().trim()),
+    );
+  }
+
+  const tenantRules: TenantRule[] = tenants.map((tenant) => ({
+    tenantId: tenant.id,
+    keywords: keywordsByTenant.get(tenant.id) ?? [],
+    ncms: ncmsByTenant.get(tenant.id) ?? [],
+  }));
 
   const sourceId = 'src-sesc-sp-01';
 
@@ -103,48 +113,60 @@ async function runSescPuppeteerScraper() {
 
     console.log(`  Encontrados ${rowsData.length} registros na página usando Puppeteer!`);
 
+    // Accumulate matches then multi-row insert outside the loop (#3 Q4 / #9 E2)
+    type EditalInsert = typeof schema.editais.$inferInsert;
+    const pendingInserts: EditalInsert[] = [];
+
     for (const data of rowsData) {
       if (!data) continue;
 
       const itemDesc = data.objectDesc.toLowerCase();
-      
+
       for (const rule of tenantRules) {
-        // SESC não mostra o NCM na listagem, portanto a verificação é essencialmente por Keyword do objeto
-        const hasKeywordMatch = rule.keywords.length > 0 && rule.keywords.some(kw => itemDesc.includes(kw));
-        
-        // Se bater, salvar!
+        // SESC nao mostra o NCM na listagem; match e por Keyword do objeto
+        const hasKeywordMatch =
+          rule.keywords.length > 0 && rule.keywords.some((kw) => itemDesc.includes(kw));
+
         if (hasKeywordMatch) {
-          const uniqueId = `edital-sescsp-${data.processNumber}-${rule.tenantId}`.toLowerCase().replace(/[^a-z0-9-]/g, '-');
+          const uniqueId = `edital-sescsp-${data.processNumber}-${rule.tenantId}`
+            .toLowerCase()
+            .replace(/[^a-z0-9-]/g, '-');
           const bidDate = parseDateStr(data.dateStr);
 
-          try {
-            await db.insert(schema.editais).values({
-              id: uniqueId,
-              tenantId: rule.tenantId, // vincula ao tenant
-              sourceId,
-              processNumber: data.processNumber,
-              title: data.objectDesc.slice(0, 100),
-              sourceName: 'SESC SP (Mural)',
-              sourceCategory: 'SESC',
-              ncmCode: rule.ncms[0] || 'N/A', // Assumir NCM principal do tenant ou N/A
-              objectDescription: data.objectDesc,
-              url: URL_SESC_SP_MURAL, 
-              rawUrl: URL_SESC_SP_MURAL,
-              status: 'OPEN',
-              agency: `SESC SP - ${data.agency}`,
-              publishedAt: new Date(), 
-              biddingDate: bidDate,
-              humanReviewStatus: 'PENDING',
-            }).onConflictDoNothing();
-
-            console.log(`    ✅ [TENANT ${rule.tenantId}] Match KEYWORD: Salvo ${uniqueId}`);
-            newInsertions++;
-          } catch (dbErr: any) {
-            console.log(`    ⚠️ Erro DB: ${dbErr.message}`);
-          }
+          pendingInserts.push({
+            id: uniqueId,
+            tenantId: rule.tenantId, // vincula ao tenant
+            sourceId,
+            processNumber: data.processNumber,
+            title: data.objectDesc.slice(0, 100),
+            sourceName: 'SESC SP (Mural)',
+            sourceCategory: 'SESC',
+            ncmCode: rule.ncms[0] || 'N/A', // Assumir NCM principal do tenant ou N/A
+            objectDescription: data.objectDesc,
+            url: URL_SESC_SP_MURAL,
+            rawUrl: URL_SESC_SP_MURAL,
+            status: 'OPEN',
+            agency: `SESC SP - ${data.agency}`,
+            publishedAt: new Date(),
+            biddingDate: bidDate,
+            humanReviewStatus: 'PENDING',
+          });
         }
       }
     }
+
+    if (pendingInserts.length > 0) {
+      try {
+        await db.insert(schema.editais).values(pendingInserts).onConflictDoNothing();
+        newInsertions = pendingInserts.length;
+        for (const row of pendingInserts) {
+          console.log(`    ✓ [TENANT ${row.tenantId}] Match KEYWORD: Salvo ${row.id}`);
+        }
+      } catch (dbErr: any) {
+        console.log(`    ⚠️ Erro DB (batch insert): ${dbErr.message}`);
+      }
+    }
+
   } catch (error: any) {
     console.error(`❌ Erro no Scraper Puppeteer: ${error.message}`);
   } finally {
