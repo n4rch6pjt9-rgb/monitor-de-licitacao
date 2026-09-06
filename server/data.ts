@@ -55,7 +55,7 @@ export const INITIAL_SOURCES: Source[] = [
     type: 'SCRAPER',
     uf: 'RJ',
     city: 'Rio de Janeiro (Nacional)',
-    endpointOrUrl: 'https://licitacoes.sesc.com.br/portal/editais',
+    endpointOrUrl: 'https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
     selectorOrParams: 'div.card-edital-sesc > table.tabela-itens tr.item-ncm',
     authType: 'NONE',
     status: 'ACTIVE',
@@ -64,7 +64,7 @@ export const INITIAL_SOURCES: Source[] = [
     successRate: 98.1,
     totalCollected: 29,
     format: 'HTML',
-    notes: 'Regulamento de Licitações do SESC (Resolução 1.252/2012).'
+    notes: 'Regulamento de Licitações do SESC (Resolução 1.252/2012). Canonical Mural Paradigma SESC DN.'
   },
   {
     id: 'src-sesc-sp-01',
@@ -108,7 +108,7 @@ export const INITIAL_SOURCES: Source[] = [
     type: 'SCRAPER',
     uf: 'DF',
     city: 'Brasília (Nacional)',
-    endpointOrUrl: 'https://sestsenat.org.br/licitacoes-e-compras',
+    endpointOrUrl: 'https://compras.sestsenat.org.br/portal/Mural.aspx',
     selectorOrParams: '#tabelaEditaisSest tr.row-processo',
     authType: 'NONE',
     status: 'ACTIVE',
@@ -117,7 +117,7 @@ export const INITIAL_SOURCES: Source[] = [
     successRate: 96.2,
     totalCollected: 31,
     format: 'HTML',
-    notes: 'Foco em concorrências, academias de saúde do motorista e credenciamentos.'
+    notes: 'Portal Mural SEST SENAT (Paradigma). Foco em concorrências, academias de saúde do motorista e credenciamentos.'
   },
   {
     id: 'src-sesi-nac-01',
@@ -667,7 +667,7 @@ export const INITIAL_EDITAIS: Edital[] = [
     publicationDate: '2026-08-14T09:00:00Z',
     openingDate: '2026-09-02T14:00:00Z',
     budgetEstimated: 1850000.00,
-    rawUrl: 'https://licitacoes.sesc.com.br/arquivos/2026/CC-042-2026.pdf',
+    rawUrl: 'https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
     s3StorageKey: 's3://editais-vault/sesc-dn/2026/CC-042-2026-v1.pdf',
     sha256Hash: 'e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855',
     fileSizeBytes: 3418290,
@@ -676,22 +676,22 @@ export const INITIAL_EDITAIS: Edital[] = [
     ocrConfidenceAvg: 96.8,
     city: 'Rio de Janeiro',
     uf: 'RJ',
-    collectionMethod: 'URL_REWRITE',
+    collectionMethod: 'MURAL_PARADIGMA',
     urlValidation: {
-      originalUrl: 'https://licitacoes.sesc.com.br/arquivos/2026/CC-042-2026.pdf',
-      originalRequestedUrl: 'https://licitacoes.sesc.com.br/arquivos/2026/CC-042-2026.pdf',
+      originalUrl: 'https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
+      originalRequestedUrl: 'https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
       validationStatus: 'VALID_DIRECT_200',
-      collectionMethod: 'URL_REWRITE',
+      collectionMethod: 'MURAL_PARADIGMA',
       httpStatusCode: 200,
-      finalResolvedUrl: 'https://licitacoes.sesc.com.br/arquivos/2026/CC-042-2026.pdf',
-      mimeTypeValidated: 'application/pdf (Magic Bytes %PDF-1.5)',
+      finalResolvedUrl: 'https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
+      mimeTypeValidated: 'text/html; charset=utf-8',
       contentLengthBytes: 3418290,
       validatedAt: '2026-08-16T12:47:00Z',
       dnsResolutionStatus: 'RESOLVED_OK',
-      rewriteRuleApplied: 'cdn.sesc.com.br -> licitacoes.sesc.com.br (Regra S0-09 #1)',
-      limitationNotice: 'Rota normalizada via motor de reescrita canônica S0-09. Integridade de hash SHA-256 e magic bytes %PDF validados.',
+      rewriteRuleApplied: 'sesc-dn -> https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
+      limitationNotice: 'Portal Mural SESC DN oficial (Paradigma). Integridade canônica confirmada.',
       redirectChain: [
-        'https://licitacoes.sesc.com.br/arquivos/2026/CC-042-2026.pdf (HTTP 200 Direto)'
+        'https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx (HTTP 200 Direto)'
       ],
       isUnavailable: false
     },
@@ -942,7 +942,7 @@ Data de abertura: 27/08/2026.`
     publicationDate: '2026-08-12T14:00:00Z',
     openingDate: '2026-09-05T10:00:00Z',
     budgetEstimated: 980000.00,
-    rawUrl: 'https://sestsenat.org.br/editais/2026/CC019-2026.pdf',
+    rawUrl: 'https://compras.sestsenat.org.br/portal/Mural.aspx',
     s3StorageKey: 's3://editais-vault/sest-senat/CC-019-2026.pdf',
     sha256Hash: '99bf4e21a007bc46f1406856b3e9447192f15931cb7f8b919a9d2ff0031a5472',
     fileSizeBytes: 2890100,
@@ -951,19 +951,19 @@ Data de abertura: 27/08/2026.`
     ocrConfidenceAvg: 74.5,
     city: 'Brasília',
     uf: 'DF',
-    collectionMethod: 'PLAYWRIGHT_INTERCEPT',
+    collectionMethod: 'MURAL_PARADIGMA',
     urlValidation: {
-      originalUrl: 'https://sestsenat.org.br/editais/2026/CC019-2026.pdf',
-      originalRequestedUrl: 'https://sestsenat.org.br/editais/2026/CC019-2026.pdf',
+      originalUrl: 'https://compras.sestsenat.org.br/portal/Mural.aspx',
+      originalRequestedUrl: 'https://compras.sestsenat.org.br/portal/Mural.aspx',
       validationStatus: 'VALID_DIRECT_200',
-      collectionMethod: 'PLAYWRIGHT_INTERCEPT',
+      collectionMethod: 'MURAL_PARADIGMA',
       httpStatusCode: 200,
-      finalResolvedUrl: 'https://sestsenat.org.br/editais/2026/CC019-2026.pdf',
-      mimeTypeValidated: 'application/pdf (Magic Bytes %PDF-1.3 escaneado)',
+      finalResolvedUrl: 'https://compras.sestsenat.org.br/portal/Mural.aspx',
+      mimeTypeValidated: 'text/html; charset=utf-8',
       contentLengthBytes: 2890100,
       validatedAt: '2026-08-16T13:30:00Z',
       dnsResolutionStatus: 'RESOLVED_OK',
-      limitationNotice: 'Documento extraído via sessão autenticada Playwright com interceptação de blob na camada DOM.',
+      limitationNotice: 'Portal Mural SEST SENAT oficial (compras.sestsenat.org.br). Integridade canônica confirmada.',
       isUnavailable: false
     },
     ocrPages: [

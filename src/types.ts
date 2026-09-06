@@ -58,7 +58,8 @@ export type CollectionMethod =
   | 'DIRECT_HTTPX'
   | 'URL_REWRITE'
   | 'PLAYWRIGHT_INTERCEPT'
-  | 'S3_CACHE_FALLBACK';
+  | 'S3_CACHE_FALLBACK'
+  | 'MURAL_PARADIGMA';
 
 export type UrlValidationStatus =
   | 'VALID_DIRECT_200'
