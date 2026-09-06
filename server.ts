@@ -18,6 +18,10 @@ import { crmRouter } from './server/routes/crm.js';
 import { encryptSecret } from './server/lib/crypto.js';
 import { verifyPassword } from './server/lib/password.js';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
+import * as cheerio from 'cheerio';
+import helmet from 'helmet';
+import cors from 'cors';
 
 dotenv.config();
 
@@ -87,13 +91,113 @@ async function startServer() {
     }
   }
 
+  // SSRF Validation Helper (Regra 12: Prevenção de SSRF)
+  function isValidSourceUrl(urlStr: string): { valid: boolean; reason?: string } {
+    try {
+      const url = new URL(urlStr);
+      const hostname = url.hostname;
+
+      // Bloqueio de IPs privados (RFC 1918, 169.254.x.x, localhost, 127.x.x.x)
+      const privateRanges = [
+        /^127\./,                     // 127.0.0.0/8 (loopback)
+        /^169\.254\./,                // 169.254.0.0/16 (link-local)
+        /^10\./,                      // 10.0.0.0/8 (private)
+        /^172\.(1[6-9]|2[0-9]|3[01])\./, // 172.16.0.0/12 (private)
+        /^192\.168\./,                // 192.168.0.0/16 (private)
+        /^localhost$/i,               // localhost
+        /^\[::\]/,                    // IPv6 loopback
+      ];
+
+      for (const range of privateRanges) {
+        if (range.test(hostname)) {
+          return { valid: false, reason: `Blocked private IP range: ${hostname}` };
+        }
+      }
+
+      // Apenas HTTP e HTTPS permitidos
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        return { valid: false, reason: `Invalid protocol: ${url.protocol}` };
+      }
+
+      return { valid: true };
+    } catch (e) {
+      return { valid: false, reason: `Invalid URL: ${(e as Error).message}` };
+    }
+  }
+
   const app = express();
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
   app.use(express.json({ limit: '15mb' }));
 
+  // Security Headers (Regra 12: Segurança Default-On)
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"], // Vite dev necessita unsafe-inline
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+      },
+    },
+    frameguard: { action: 'deny' }, // Previne clickjacking (X-Frame-Options: DENY)
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  }));
+
+  // CORS: allowlist via CORS_ORIGINS (comma-separated).
+  // TODO(Marcelo): set CORS_ORIGINS in production to the real front-end origins
+  // (e.g. https://app.example.com,https://www.example.com). Do not invent domains.
+  // If unset in production, browser cross-origin requests are denied (fail-closed).
+  function resolveCorsOrigins(): string[] {
+    const fromEnv = (process.env.CORS_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (process.env.NODE_ENV === 'production') {
+      if (fromEnv.length === 0) {
+        console.warn(
+          '[CORS] CORS_ORIGINS is unset in production — denying browser cross-origin requests until configured.'
+        );
+      }
+      return fromEnv;
+    }
+    const devDefaults = [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3000',
+    ];
+    return [...new Set([...devDefaults, ...fromEnv])];
+  }
+
+  app.use(cors({
+    origin: resolveCorsOrigins(),
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+  }));
+
+  // Rate limiting: Brute-force protection em /api/auth/login
+  // Máximo 5 tentativas por 15 minutos por IP (Regra 12: Anti Brute-Force)
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 5, // máximo 5 requisições
+    message: 'Muitas tentativas de login. Tente novamente em 15 minutos.',
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Rate limiting: AI / Gemini consumption (cost + abuse protection)
+  // 30 requests / 15 min / IP — covers analyze-ai, gemini tech-spec, revops AI
+  const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    message: 'Limite de requisições de IA atingido. Tente novamente em alguns minutos.',
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
   // Rotas públicas (login)
-  app.post('/api/auth/login', async (req: Request, res: Response) => {
+  app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
@@ -105,6 +209,14 @@ async function startServer() {
       const dbUser = rows[0];
 
       if (!dbUser || !verifyPassword(password, dbUser.passwordHash)) {
+        // Log failed auth without secrets/passwords (Regra 12: audit trail)
+        const safeEmail =
+          typeof email === 'string' ? email.trim().slice(0, 120) : undefined;
+        console.warn('[Auth] Failed login attempt', {
+          email: safeEmail,
+          ip: req.ip,
+          at: new Date().toISOString(),
+        });
         return res.status(401).json({ error: 'Credenciais inválidas' });
       }
 
@@ -294,6 +406,84 @@ async function startServer() {
     }
   });
 
+  // Test Source Connection with SSRF validation (Regra 12: Prevenção de SSRF)
+  app.post('/api/sources/:id/test', async (req: Request, res: Response) => {
+    const { id: sourceId } = req.params;
+
+    try {
+      const [source] = await db.select().from(schema.sources)
+        .where(sql`${schema.sources.id} = ${sourceId} AND ${schema.sources.tenantId} = ${req.user!.tenantId}`);
+
+      if (!source) {
+        return res.status(404).json({ error: 'Fonte não encontrada.' });
+      }
+
+      // SSRF Validation: Bloquear IPs privados, localhost, etc.
+      const urlValidation = isValidSourceUrl(source.endpointOrUrl);
+      if (!urlValidation.valid) {
+        return res.status(403).json({
+          success: false,
+          error: 'SSRF Protection: ' + urlValidation.reason,
+          sourceId,
+          urlTested: source.endpointOrUrl
+        });
+      }
+
+      // Fazer fetch real com timeout (Regra 12: Timeouts rigorosos)
+      const startTime = Date.now();
+      const response = await fetch(source.endpointOrUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Monitor-Licitacoes/1.0)',
+        },
+        signal: AbortSignal.timeout(15000), // 15 segundos
+      });
+
+      const latencyMs = Date.now() - startTime;
+      const bodyText = await response.text();
+
+      const isApi = source.type === 'API';
+      let payloadPreview: any;
+
+      if (isApi) {
+        try {
+          payloadPreview = JSON.parse(bodyText);
+        } catch {
+          payloadPreview = { parseError: 'Resposta não é JSON válido.', rawPreview: bodyText.slice(0, 200) };
+        }
+      } else {
+        const $ = cheerio.load(bodyText);
+        const rows = $('tbody tr, table tr').length;
+        payloadPreview = {
+          htmlElementsMatched: rows,
+          botProtectionDetected: /captcha|access denied|cloudflare|are you human/i.test(bodyText),
+        };
+      }
+
+      res.json({
+        success: response.ok,
+        sourceId,
+        type: source.type,
+        urlTested: source.endpointOrUrl,
+        latencyMs,
+        httpStatusCode: response.status,
+        statusText: response.statusText,
+        payloadPreview,
+        testedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      const statusText = error.name === 'TimeoutError' || error.name === 'AbortError'
+        ? 'Timeout (15s) sem resposta.'
+        : (error.message || 'Erro de rede.');
+
+      res.json({
+        success: false,
+        sourceId,
+        statusText,
+        testedAt: new Date().toISOString(),
+      });
+    }
+  });
+
   // Test Source Connection (API or Scraper Probe)
   app.post('/api/sources/test', (req: Request, res: Response) => {
     const { sourceId, endpointOrUrl, type, selectorOrParams } = req.body;
@@ -468,7 +658,7 @@ async function startServer() {
   // ==========================================
   // RevOps Endpoints (Squad de Inteligência)
   // ==========================================
-  app.get('/api/crm/revops/insights', async (req: Request, res: Response) => {
+  app.get('/api/crm/revops/insights', aiLimiter, async (req: Request, res: Response) => {
     try {
       const tenantId = (req.query.tenantId as string) || '1';
       const { RevOpsAgent } = await import('./server/crm_agentic/agents/revops_agent');
@@ -482,7 +672,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/crm/revops/report', async (req: Request, res: Response) => {
+  app.post('/api/crm/revops/report', aiLimiter, async (req: Request, res: Response) => {
     try {
       const { tenantId, recipientPhone } = req.body;
       const tid = tenantId || '1';
@@ -961,7 +1151,7 @@ async function startServer() {
   });
 
   // Gemini AI Analysis endpoint
-  app.post('/api/editais/:id/analyze-ai', async (req: Request, res: Response) => {
+  app.post('/api/editais/:id/analyze-ai', aiLimiter, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
       const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
@@ -980,7 +1170,7 @@ async function startServer() {
   });
 
   // Gemini AI Technical Specification & Supplier/Product research endpoint (Item 4.3)
-  app.post('/api/gemini/analyze-technical-specification', async (req: Request, res: Response) => {
+  app.post('/api/gemini/analyze-technical-specification', aiLimiter, async (req: Request, res: Response) => {
     try {
       const { clauseText, editalTitle, entityName, processNumber } = req.body;
       if (!clauseText || typeof clauseText !== 'string') {
