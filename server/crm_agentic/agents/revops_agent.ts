@@ -1,5 +1,6 @@
 import { calculateWinRate, calculateConversionRate, analyzePipelineHygiene } from '../tools/revops_tools';
 import { generateTextWithFallback } from '../../lib/ai';
+import { ai as amplitudeAI, revopsAgent } from '../../lib/amplitude-ai';
 
 export class RevOpsAgent {
   /**
@@ -8,10 +9,10 @@ export class RevOpsAgent {
   async generateStrategicBriefing(tenantId: string) {
     const tid = parseInt(tenantId, 10);
     const now = new Date();
-    
+
     // Mês atual
     const startOfMonth = new Date(now.getFullYear(), now.getMonth(), 1);
-    
+
     // Coorte de 3 meses atrás (para licitações, ciclo longo)
     const cohortStart = new Date(now.getFullYear(), now.getMonth() - 3, 1);
     const cohortEnd = new Date(now.getFullYear(), now.getMonth() - 2, 0);
@@ -20,7 +21,7 @@ export class RevOpsAgent {
     const winRateData = await calculateWinRate(tid, startOfMonth, now);
     const cohortData = await calculateConversionRate(tid, cohortStart, cohortEnd);
     const hygieneData = await analyzePipelineHygiene(tid, 30); // 30 dias de SLA por padrão
-    
+
     // 2. Acionar a IA (Strategist) para interpretar
     const prompt = `
 Você é o Agente de RevOps (Revenue Operations) de uma empresa que trabalha com Licitações Públicas.
@@ -41,41 +42,69 @@ RETORNO:
 Devolva apenas o briefing em formato Markdown (sem blocos de código extra).
     `.trim();
 
+    const sessionId = `revops-${tenantId}-${Date.now()}`;
     try {
-      const { text } = await generateTextWithFallback({
-        system: "Você é um Agente RevOps altamente analítico. Conheça seus números, compreenda seus números.",
-        prompt: prompt,
-        maxOutputTokens: 800,
-        temperature: 0.4
-      });
+      return await revopsAgent.session({ sessionId }).run(async (s) => {
+        s.trackUserMessage('Gerar briefing estratégico de RevOps do mês atual', {
+          context: { tenantId, winRateData, cohortData, hygieneData },
+        });
 
-      return {
-        metrics: {
-          winRateData,
-          cohortData,
-          hygieneData
-        },
-        aiBriefing: text
-      };
-    } catch (error: any) {
-      console.error('[RevOpsAgent Error]:', error);
-      
-      // Fallback heurístico em caso de falha de cota/rate limit
-      const fallbackText = `### Resumo Estratégico (Fallback Heurístico)
+        const start = performance.now();
+        try {
+          const { text, response, usage } = await generateTextWithFallback({
+            system: "Você é um Agente RevOps altamente analítico. Conheça seus números, compreenda seus números.",
+            prompt: prompt,
+            maxOutputTokens: 800,
+            temperature: 0.4
+          });
+          const latencyMs = performance.now() - start;
+          const modelName = response?.modelId ?? 'unknown';
+          // generateTextWithFallback tenta Gemini primeiro e cai para xAI
+          // (modelos 'grok-*') — o modelId é o único jeito de saber quem respondeu.
+          const provider = modelName.includes('grok') ? 'xai' : 'google';
+
+          s.trackAiMessage(text, modelName, provider, latencyMs, {
+            inputTokens: usage?.inputTokens ?? undefined,
+            outputTokens: usage?.outputTokens ?? undefined,
+            totalTokens: usage?.totalTokens ?? undefined,
+          });
+
+          return {
+            metrics: {
+              winRateData,
+              cohortData,
+              hygieneData
+            },
+            aiBriefing: text
+          };
+        } catch (error: any) {
+          console.error('[RevOpsAgent Error]:', error);
+
+          // Fallback heurístico em caso de falha de cota/rate limit
+          const fallbackText = `### Resumo Estratégico (Fallback Heurístico)
 Devido a uma instabilidade temporária na API de IA, geramos este resumo baseado em regras heurísticas:
 
 - **Win Rate:** ${winRateData.winRate}. ${parseFloat(winRateData.winRate) < 15 ? 'Baixo. Precisamos revisar a qualificação.' : 'Saudável. Focar em volume.'}
 - **Coorte (3 meses atrás):** ${cohortData.cohortSize} negócios criados, ${cohortData.wonFromCohort} convertidos (${cohortData.conversionRate}).
 - **Higiene do Funil:** Temos ${hygieneData.staleCount} negócios estagnados há mais de 30 dias. Recomendação: Faça uma limpa no funil.`;
 
-      return {
-        metrics: {
-          winRateData,
-          cohortData,
-          hygieneData
-        },
-        aiBriefing: fallbackText
-      };
+          s.trackAiMessage(fallbackText, 'heuristic-fallback', 'internal', performance.now() - start, {
+            isError: true,
+            errorMessage: error.message,
+          });
+
+          return {
+            metrics: {
+              winRateData,
+              cohortData,
+              hygieneData
+            },
+            aiBriefing: fallbackText
+          };
+        }
+      });
+    } finally {
+      await amplitudeAI.flush();
     }
   }
 }

@@ -1,3 +1,8 @@
+// dotenv precisa carregar antes de qualquer import que leia process.env no
+// module-load (ex: server/lib/amplitude-ai.ts) — imports estáticos ES module
+// resolvem antes do corpo deste arquivo, então dotenv.config() teria rodado
+// tarde demais se ficasse depois dos outros imports.
+import 'dotenv/config';
 import express, { Request, Response } from 'express';
 declare global {
   namespace Express {
@@ -7,7 +12,6 @@ declare global {
   }
 }
 import path from 'path';
-import dotenv from 'dotenv';
 import { createServer as createViteServer } from 'vite';
 import { analyzeEditalTextWithAI, analyzeTechnicalSpecificationRestrictedAI } from './server/gemini';
 import { WhatsAppNotification, RetificationDiff, SchedulerState } from './src/types';
@@ -22,8 +26,6 @@ import rateLimit from 'express-rate-limit';
 import * as cheerio from 'cheerio';
 import helmet from 'helmet';
 import cors from 'cors';
-
-dotenv.config();
 
 // Conexão com o banco via Drizzle
 let notifications: WhatsAppNotification[] = [];
@@ -1161,7 +1163,7 @@ async function startServer() {
 
       const ocrPages: any[] = edital.ocrPages || [];
       const fullText = ocrPages.map((p: any) => `[PÁGINA ${p.pageNumber}]\n${p.text}`).join('\n\n');
-      const analysis = await analyzeEditalTextWithAI(fullText, edital.title);
+      const analysis = await analyzeEditalTextWithAI(fullText, edital.title, id);
 
       res.json(analysis);
     } catch (e) {
