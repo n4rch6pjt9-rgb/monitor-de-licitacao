@@ -24,6 +24,7 @@ import {
 } from '../../types/mural';
 import { StatusBadge } from './StatusBadge';
 import { HonestField } from './HonestField';
+import { apiClient, assertOk } from '../../apiClient';
 
 export const StatusCatalogView: React.FC = () => {
   const [activeFamily, setActiveFamily] = useState<StatusFamily>('PregaoEletronico');
@@ -68,7 +69,7 @@ export const StatusCatalogView: React.FC = () => {
   // Fetch counts from /api/status-catalog/counts
   const fetchCounts = async () => {
     try {
-      const res = await fetch('/api/status-catalog/counts');
+      const res = await apiClient('/api/status-catalog/counts');
       if (res.ok) {
         const data: StatusCatalogCountsResponse = await res.json();
         setCounts(data);
@@ -89,10 +90,8 @@ export const StatusCatalogView: React.FC = () => {
         params.append('search', searchTerm.trim());
       }
 
-      const res = await fetch(`/api/status-catalog?${params.toString()}`);
-      if (!res.ok) {
-        throw new Error(`Erro ${res.status}: falha ao listar status`);
-      }
+      const res = await apiClient(`/api/status-catalog?${params.toString()}`);
+      await assertOk(res);
       const data = await res.json();
       setItems(data.items || []);
     } catch (err: any) {
@@ -154,7 +153,7 @@ export const StatusCatalogView: React.FC = () => {
     setEditLabelError(null);
 
     try {
-      const res = await fetch(`/api/status-catalog/${editingItem.id}`, {
+      const res = await apiClient(`/api/status-catalog/${editingItem.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -197,7 +196,7 @@ export const StatusCatalogView: React.FC = () => {
     setCreateError(null);
 
     try {
-      const res = await fetch('/api/status-catalog', {
+      const res = await apiClient('/api/status-catalog', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
@@ -236,7 +235,7 @@ export const StatusCatalogView: React.FC = () => {
 
     setIsDeactivating(true);
     try {
-      const res = await fetch(`/api/status-catalog/${deactivatingItem.id}`, {
+      const res = await apiClient(`/api/status-catalog/${deactivatingItem.id}`, {
         method: 'DELETE'
       });
 
@@ -269,7 +268,7 @@ export const StatusCatalogView: React.FC = () => {
 
     // Re-activating does not require confirmation dialog
     try {
-      const res = await fetch(`/api/status-catalog/${item.id}`, {
+      const res = await apiClient(`/api/status-catalog/${item.id}`, {
         method: 'PUT',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ active: true })

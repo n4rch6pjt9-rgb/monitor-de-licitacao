@@ -2,6 +2,7 @@ import React, { useState, useEffect, useCallback } from 'react';
 import { Search, Filter, RotateCcw, AlertTriangle, Inbox, RefreshCw, X } from 'lucide-react';
 import { MuralCardMVP, StatusFamily, STATUS_FAMILIES, STATUS_FAMILY_LABELS } from '../../types/mural';
 import { MuralCard } from './MuralCard';
+import { apiClient, assertOk } from '../../apiClient';
 
 interface MuralCardsViewProps {
   onOpenDetail: (codigo: string) => void;
@@ -27,10 +28,8 @@ export const MuralCardsView: React.FC<MuralCardsViewProps> = ({ onOpenDetail }) 
       if (searchTerm.trim()) params.append('search', searchTerm.trim());
 
       const url = `/api/mural/cards${params.toString() ? `?${params.toString()}` : ''}`;
-      const res = await fetch(url);
-      if (!res.ok) {
-        throw new Error(`Erro ${res.status}: falha ao carregar mural`);
-      }
+      const res = await apiClient(url);
+      await assertOk(res);
       const data = await res.json();
       setCards(data.items || []);
     } catch (err: any) {

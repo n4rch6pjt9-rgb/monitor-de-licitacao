@@ -32,6 +32,7 @@ import {
   formatDateTimeToBR,
   formatCurrencyBRL
 } from '../../utils/muralFormatters';
+import { apiClient, assertOk } from '../../apiClient';
 
 interface ProcessDetailViewProps {
   identifier: string; // codigo or numero_processo (e.g. "76" or "000010901-2/2026")
@@ -67,14 +68,12 @@ export const ProcessDetailView: React.FC<ProcessDetailViewProps> = ({
     setErrorMessage(null);
 
     try {
-      const res = await fetch(`/api/mural/processes/${encodeURIComponent(identifier)}`);
+      const res = await apiClient(`/api/mural/processes/${encodeURIComponent(identifier)}`);
       if (res.status === 404) {
         setIsNotFound(true);
         return;
       }
-      if (!res.ok) {
-        throw new Error(`Erro ${res.status}: falha ao carregar processo`);
-      }
+      await assertOk(res);
       const data: MuralProcessDetail = await res.json();
       setDetail(data);
     } catch (err: any) {
