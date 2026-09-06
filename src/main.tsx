@@ -12,16 +12,34 @@ if (!amplitudeApiKey) {
   amplitude.track('Viewed Dashboard Page', { prompt_version: 'BA400.4' }); // helps improve this setup flow — safe to remove once you've verified the event lands
 }
 
-// Interceptador global para injetar a chave de API em todas as chamadas /api (Regra 3: Segurança Default-On)
+// Interceptador global para chamadas /api:
+// 1. Injeta Bearer JWT a partir do storage de login se presente.
+// 2. Local DEV ONLY: se VITE_MONITOR_API_KEY foi explicitamente setado, injeta x-api-key (sem fallback).
 const originalFetch = window.fetch;
 window.fetch = async (...args) => {
   let [resource, config] = args;
   if (typeof resource === 'string' && resource.startsWith('/api')) {
     config = config || {};
-    config.headers = {
-      ...config.headers,
-      'x-api-key': import.meta.env.VITE_MONITOR_API_KEY || 'monitor-dev-key'
-    };
+    const headers = new Headers(config.headers || {});
+
+    // Injeta Bearer JWT se existir no storage
+    const token =
+      localStorage.getItem('auth_token') ||
+      sessionStorage.getItem('auth_token') ||
+      (window as any).__AUTH_TOKEN__;
+    if (token && !headers.has('Authorization')) {
+      headers.set('Authorization', `Bearer ${token}`);
+    }
+
+    // Local DEV ONLY: injeta x-api-key apenas com chave explícita em import.meta.env
+    if (import.meta.env?.DEV && import.meta.env?.VITE_MONITOR_API_KEY) {
+      const explicitDevKey = import.meta.env.VITE_MONITOR_API_KEY.trim();
+      if (explicitDevKey && !headers.has('x-api-key')) {
+        headers.set('x-api-key', explicitDevKey);
+      }
+    }
+
+    config.headers = headers;
   }
   return originalFetch(resource, config);
 };

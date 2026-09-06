@@ -1,6 +1,40 @@
 /**
  * HTTP Client centralizado para o Monitor de Licitações.
+ * Suporta autenticação via Bearer JWT (localStorage / sessionStorage / window).
+ * Em produção: apenas Authorization Bearer é enviado.
+ * Em desenvolvimento local: injeta x-api-key somente se VITE_MONITOR_API_KEY
+ * for explicitamente definido via env (sem qualquer fallback hardcoded).
  */
+
+const TOKEN_STORAGE_KEY = 'auth_token';
+
+/**
+ * Retorna o token de autenticação JWT ativo, caso exista no storage ou contexto da aplicação.
+ */
+export function getAuthToken(): string | null {
+  if (typeof window === 'undefined') return null;
+  return (
+    localStorage.getItem(TOKEN_STORAGE_KEY) ||
+    sessionStorage.getItem(TOKEN_STORAGE_KEY) ||
+    (window as any).__AUTH_TOKEN__ ||
+    null
+  );
+}
+
+/**
+ * Salva o token JWT de autenticação no storage local.
+ */
+export function setAuthToken(token: string | null): void {
+  if (typeof window === 'undefined') return;
+  if (token) {
+    localStorage.setItem(TOKEN_STORAGE_KEY, token);
+    (window as any).__AUTH_TOKEN__ = token;
+  } else {
+    localStorage.removeItem(TOKEN_STORAGE_KEY);
+    sessionStorage.removeItem(TOKEN_STORAGE_KEY);
+    delete (window as any).__AUTH_TOKEN__;
+  }
+}
 
 /**
  * Lança um erro se a resposta HTTP não for bem-sucedida (status 2xx).
@@ -19,23 +53,32 @@ export async function assertOk(res: Response): Promise<void> {
 }
 
 /**
- * Wrapper sobre fetch para chamadas à API, injetando chaves e validando retorno se solicitado.
+ * Wrapper sobre fetch para chamadas à API.
+ * 1. Injeta Bearer JWT para todas as chamadas autenticadas quando disponível no storage.
+ * 2. Em ambiente de desenvolvimento local (DEV only), se VITE_MONITOR_API_KEY estiver
+ *    explicitamente configurado, pode enviá-lo como x-api-key. Caso contrário, nenhum
+ *    cabeçalho x-api-key é injetado.
  */
 export async function apiClient(url: string, options: RequestInit = {}): Promise<Response> {
-  // A injeção do x-api-key atualmente está ocorrendo globalmente no main.tsx.
-  // Caso o interceptor global seja removido, a injeção deve ser feita aqui:
-  /*
-  options.headers = {
-    ...options.headers,
-    'x-api-key': import.meta.env.VITE_MONITOR_API_KEY || 'monitor-dev-key'
-  };
-  */
+  const headers = new Headers(options.headers || {});
 
-  const res = await fetch(url, options);
-  
-  // Por padrão, chamadas via apiClient podem ser validadas externamente 
-  // usando assertOk(res), ou podemos chamar internamente.
-  // Para flexibilidade, retornamos o Response e deixamos o chamador usar assertOk
-  // onde for conveniente.
-  return res;
+  // 1. Injeta Bearer JWT se disponível (Regra 3 / login)
+  const token = getAuthToken();
+  if (token && !headers.has('Authorization')) {
+    headers.set('Authorization', `Bearer ${token}`);
+  }
+
+  // 2. Local DEV ONLY: se VITE_MONITOR_API_KEY foi explicitamente setado em import.meta.env
+  // Sem qualquer string hardcoded ou fallback default.
+  if (import.meta.env?.DEV && import.meta.env?.VITE_MONITOR_API_KEY) {
+    const explicitDevKey = import.meta.env.VITE_MONITOR_API_KEY.trim();
+    if (explicitDevKey && !headers.has('x-api-key')) {
+      headers.set('x-api-key', explicitDevKey);
+    }
+  }
+
+  return fetch(url, {
+    ...options,
+    headers
+  });
 }

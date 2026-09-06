@@ -509,22 +509,42 @@ export async function getMuralProcessDetail(
 ): Promise<MuralProcessDetail | null> {
   if (!identifier) return null;
   const clean = identifier.trim();
-  const direct = MURAL_PROCESSES_STORE.get(clean);
-  if (direct) {
-    return direct;
-  }
+  let found = MURAL_PROCESSES_STORE.get(clean) || null;
 
   // Lookup by codigo or numero_processo
-  for (const item of MURAL_PROCESSES_STORE.values()) {
-    if (
-      item.resumo.codigo === clean ||
-      item.resumo.numero_processo.toLowerCase() === clean.toLowerCase()
-    ) {
-      return item;
+  if (!found) {
+    for (const item of MURAL_PROCESSES_STORE.values()) {
+      if (
+        item.resumo.codigo === clean ||
+        item.resumo.numero_processo.toLowerCase() === clean.toLowerCase()
+      ) {
+        found = item;
+        break;
+      }
     }
   }
 
-  return null;
+  if (!found) return null;
+
+  // Refresh status label from catalog if edited
+  const catalogEntry = await statusCatalogRepository.getByFamilyAndCode(
+    found.resumo.status_normalizado.family,
+    found.resumo.status_normalizado.code
+  );
+  if (catalogEntry) {
+    return {
+      ...found,
+      resumo: {
+        ...found.resumo,
+        status_normalizado: {
+          ...found.resumo.status_normalizado,
+          label: catalogEntry.label
+        }
+      }
+    };
+  }
+
+  return found;
 }
 
 export async function listMuralCards(filters?: {
@@ -541,14 +561,24 @@ export async function listMuralCards(filters?: {
     }
     seenCodes.add(item.resumo.codigo);
 
+    // Dynamic catalog label lookup
+    const catalogEntry = await statusCatalogRepository.getByFamilyAndCode(
+      item.resumo.status_normalizado.family,
+      item.resumo.status_normalizado.code
+    );
+    const liveStatus = catalogEntry ? {
+      ...item.resumo.status_normalizado,
+      label: catalogEntry.label
+    } : item.resumo.status_normalizado;
+
     // Apply filters
-    if (filters?.family && item.resumo.status_normalizado.family !== filters.family) {
+    if (filters?.family && liveStatus.family !== filters.family) {
       continue;
     }
     if (
       filters?.status &&
-      item.resumo.status_normalizado.code.toLowerCase() !== filters.status.toLowerCase() &&
-      item.resumo.status_normalizado.label.toLowerCase() !== filters.status.toLowerCase()
+      liveStatus.code.toLowerCase() !== filters.status.toLowerCase() &&
+      liveStatus.label.toLowerCase() !== filters.status.toLowerCase()
     ) {
       continue;
     }
@@ -574,12 +604,12 @@ export async function listMuralCards(filters?: {
       termino_propostas: item.resumo.termino_propostas,
       inicio_inscricoes: null,
       status_bruto: item.resumo.situacao,
-      status_normalizado: item.resumo.status_normalizado,
+      status_normalizado: liveStatus,
       link_canonico: item.resumo.link_canonico,
       fonte: item.resumo.fonte,
     };
 
-    cards.push(toCardMVP(canonical, item.resumo.status_normalizado));
+    cards.push(toCardMVP(canonical, liveStatus));
   }
 
   return cards;

@@ -296,3 +296,5 @@ export interface RestrictiveSpecAnalysis {
     draftArgumentation: string;
   };
 }
+
+export * from './types/mural';

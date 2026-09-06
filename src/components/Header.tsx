@@ -34,13 +34,13 @@ export const Header: React.FC<HeaderProps> = ({
   const tabs = [
     { id: 'dashboard', label: 'Painel Geral', icon: Activity },
     { id: 'sources', label: 'Fontes & Conectores', icon: Building2, badge: '28 Mun. + Sistema S' },
-    { id: 'editais', label: 'Editais & OCR', icon: FileText },
+    { id: 'editais', label: 'Mural de Editais', icon: FileText },
     { id: 'findings', label: 'Achados & Legislação', icon: Scale },
     { id: 'tech-spec-ai', label: 'Pesquisa Técnica IA', icon: Sparkles, badge: 'Item 4.3' },
     { id: 'review', label: 'Revisão Humana', icon: UserCheck, badge: pendingReviewCount > 0 ? `${pendingReviewCount} Pendente${pendingReviewCount > 1 ? 's' : ''}` : undefined, highlight: pendingReviewCount > 0 },
     { id: 'diff', label: 'Retificações & Diff', icon: GitCompare },
     { id: 'whatsapp', label: 'Notificações WhatsApp', icon: MessageSquare },
-    { id: 'ncm-config', label: 'Filtro NCM', icon: Dumbbell }
+    { id: 'ncm-config', label: 'Configurações Globais', icon: Dumbbell }
   ];
 
   return (
