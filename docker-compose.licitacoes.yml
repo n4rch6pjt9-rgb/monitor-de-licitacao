@@ -21,7 +21,7 @@
 # =============================================================================
 services:
   licitacoes:
-    image: ${GHCR_IMAGE:-ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao:latest}
+    image: ${GHCR_IMAGE:-ghcr.io/monitor-licitacao/monitor-de-licitacao:latest}
     env_file: .env.production
     networks:
       gymsite:
