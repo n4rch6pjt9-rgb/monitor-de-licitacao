@@ -19,6 +19,7 @@ import { encryptSecret } from './server/lib/crypto.js';
 import { verifyPassword } from './server/lib/password.js';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
+import * as cheerio from 'cheerio';
 
 dotenv.config();
 
@@ -85,6 +86,40 @@ async function startServer() {
         'ERRO CRÍTICO: MONITOR_API_KEY não está configurada em produção. ' +
         'Configure MONITOR_API_KEY nas variáveis de ambiente e reinicie.'
       );
+    }
+  }
+
+  // SSRF Validation Helper (Regra 12: Prevenção de SSRF)
+  function isValidSourceUrl(urlStr: string): { valid: boolean; reason?: string } {
+    try {
+      const url = new URL(urlStr);
+      const hostname = url.hostname;
+
+      // Bloqueio de IPs privados (RFC 1918, 169.254.x.x, localhost, 127.x.x.x)
+      const privateRanges = [
+        /^127\./,                     // 127.0.0.0/8 (loopback)
+        /^169\.254\./,                // 169.254.0.0/16 (link-local)
+        /^10\./,                      // 10.0.0.0/8 (private)
+        /^172\.(1[6-9]|2[0-9]|3[01])\./, // 172.16.0.0/12 (private)
+        /^192\.168\./,                // 192.168.0.0/16 (private)
+        /^localhost$/i,               // localhost
+        /^\[::\]/,                    // IPv6 loopback
+      ];
+
+      for (const range of privateRanges) {
+        if (range.test(hostname)) {
+          return { valid: false, reason: `Blocked private IP range: ${hostname}` };
+        }
+      }
+
+      // Apenas HTTP e HTTPS permitidos
+      if (!['http:', 'https:'].includes(url.protocol)) {
+        return { valid: false, reason: `Invalid protocol: ${url.protocol}` };
+      }
+
+      return { valid: true };
+    } catch (e) {
+      return { valid: false, reason: `Invalid URL: ${(e as Error).message}` };
     }
   }
 
@@ -302,6 +337,84 @@ async function startServer() {
     } catch (e) {
       console.error(e);
       res.status(500).json({ error: 'Erro ao excluir fonte.' });
+    }
+  });
+
+  // Test Source Connection with SSRF validation (Regra 12: Prevenção de SSRF)
+  app.post('/api/sources/:id/test', async (req: Request, res: Response) => {
+    const { id: sourceId } = req.params;
+
+    try {
+      const [source] = await db.select().from(schema.sources)
+        .where(sql`${schema.sources.id} = ${sourceId} AND ${schema.sources.tenantId} = ${req.user!.tenantId}`);
+
+      if (!source) {
+        return res.status(404).json({ error: 'Fonte não encontrada.' });
+      }
+
+      // SSRF Validation: Bloquear IPs privados, localhost, etc.
+      const urlValidation = isValidSourceUrl(source.endpointOrUrl);
+      if (!urlValidation.valid) {
+        return res.status(403).json({
+          success: false,
+          error: 'SSRF Protection: ' + urlValidation.reason,
+          sourceId,
+          urlTested: source.endpointOrUrl
+        });
+      }
+
+      // Fazer fetch real com timeout (Regra 12: Timeouts rigorosos)
+      const startTime = Date.now();
+      const response = await fetch(source.endpointOrUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Monitor-Licitacoes/1.0)',
+        },
+        signal: AbortSignal.timeout(15000), // 15 segundos
+      });
+
+      const latencyMs = Date.now() - startTime;
+      const bodyText = await response.text();
+
+      const isApi = source.type === 'API';
+      let payloadPreview: any;
+
+      if (isApi) {
+        try {
+          payloadPreview = JSON.parse(bodyText);
+        } catch {
+          payloadPreview = { parseError: 'Resposta não é JSON válido.', rawPreview: bodyText.slice(0, 200) };
+        }
+      } else {
+        const $ = cheerio.load(bodyText);
+        const rows = $('tbody tr, table tr').length;
+        payloadPreview = {
+          htmlElementsMatched: rows,
+          botProtectionDetected: /captcha|access denied|cloudflare|are you human/i.test(bodyText),
+        };
+      }
+
+      res.json({
+        success: response.ok,
+        sourceId,
+        type: source.type,
+        urlTested: source.endpointOrUrl,
+        latencyMs,
+        httpStatusCode: response.status,
+        statusText: response.statusText,
+        payloadPreview,
+        testedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      const statusText = error.name === 'TimeoutError' || error.name === 'AbortError'
+        ? 'Timeout (15s) sem resposta.'
+        : (error.message || 'Erro de rede.');
+
+      res.json({
+        success: false,
+        sourceId,
+        statusText,
+        testedAt: new Date().toISOString(),
+      });
     }
   });
 
