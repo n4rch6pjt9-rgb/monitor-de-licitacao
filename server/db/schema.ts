@@ -31,6 +31,17 @@ export const tenantConfigs = pgTable('tenant_configs', {
   createdAt: timestamp('created_at').defaultNow(),
 });
 
+
+// Usuários com acesso ao sistema (login)
+export const users = pgTable('users', {
+  id: text('id').primaryKey(),
+  tenantId: integer('tenant_id').references(() => tenants.id).notNull(),
+  name: text('name').notNull(),
+  email: text('email').notNull().unique(),
+  passwordHash: text('password_hash').notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+});
+
 // NCMs Monitorados pelo Tenant
 export const tenantNcms = pgTable('tenant_ncms', {
   id: serial('id').primaryKey(),
