@@ -20,6 +20,8 @@ import { verifyPassword } from './server/lib/password.js';
 import jwt from 'jsonwebtoken';
 import rateLimit from 'express-rate-limit';
 import * as cheerio from 'cheerio';
+import helmet from 'helmet';
+import cors from 'cors';
 
 dotenv.config();
 
@@ -127,6 +129,31 @@ async function startServer() {
   const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3001;
 
   app.use(express.json({ limit: '15mb' }));
+
+  // Security Headers (Regra 12: Segurança Default-On)
+  app.use(helmet({
+    contentSecurityPolicy: {
+      directives: {
+        defaultSrc: ["'self'"],
+        scriptSrc: ["'self'", "'unsafe-inline'"], // Vite dev necessita unsafe-inline
+        styleSrc: ["'self'", "'unsafe-inline'"],
+        imgSrc: ["'self'", 'data:', 'https:'],
+      },
+    },
+    frameguard: { action: 'deny' }, // Previne clickjacking (X-Frame-Options: DENY)
+    referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
+  }));
+
+  // CORS: Whitelistar apenas origens conhecidas
+  // Em produção, configurar para domínios da aplicação
+  app.use(cors({
+    origin: process.env.NODE_ENV === 'production'
+      ? ['https://your-domain.com'] // Substituir em produção
+      : ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000'],
+    credentials: true,
+    methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+    allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
+  }));
 
   // Rate limiting: Brute-force protection em /api/auth/login
   // Máximo 5 tentativas por 15 minutos por IP (Regra 12: Anti Brute-Force)
