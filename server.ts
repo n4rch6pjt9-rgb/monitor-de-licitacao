@@ -18,6 +18,7 @@ import { crmRouter } from './server/routes/crm.js';
 import { encryptSecret } from './server/lib/crypto.js';
 import { verifyPassword } from './server/lib/password.js';
 import jwt from 'jsonwebtoken';
+import rateLimit from 'express-rate-limit';
 
 dotenv.config();
 
@@ -92,8 +93,18 @@ async function startServer() {
 
   app.use(express.json({ limit: '15mb' }));
 
+  // Rate limiting: Brute-force protection em /api/auth/login
+  // Máximo 5 tentativas por 15 minutos por IP (Regra 12: Anti Brute-Force)
+  const loginLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000, // 15 minutos
+    max: 5, // máximo 5 requisições
+    message: 'Muitas tentativas de login. Tente novamente em 15 minutos.',
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
   // Rotas públicas (login)
-  app.post('/api/auth/login', async (req: Request, res: Response) => {
+  app.post('/api/auth/login', loginLimiter, async (req: Request, res: Response) => {
     const { email, password } = req.body;
 
     if (!email || !password) {
