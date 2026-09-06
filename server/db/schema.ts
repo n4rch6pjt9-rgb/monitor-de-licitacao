@@ -139,3 +139,16 @@ export const crmLogs = pgTable('crm_logs', {
   details: jsonb('details').$type<any>(),
   timestamp: timestamp('timestamp').defaultNow(),
 });
+
+// STATUS CATALOG (5 famílias do Sistema S / Paradigma)
+export const statusCatalog = pgTable('status_catalog', {
+  id: serial('id').primaryKey(),
+  family: text('family').notNull(), // 'ProcessoDeContratacao' | 'ProcessosPresenciais' | 'CotacaoDeOrcamento' | 'PregaoEletronico' | 'CompraDireta'
+  code: text('code').notNull(), // Stable identifier, e.g. 'HOMOLOGADO', 'EM_ANDAMENTO'
+  label: text('label').notNull(), // Editable label
+  description: text('description'), // Editable description
+  active: boolean('active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+

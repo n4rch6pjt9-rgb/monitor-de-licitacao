@@ -25,38 +25,13 @@ NCM_CONFIG = {
 # --- FUNÇÃO DE BUSCA REAL / RESOLUÇÃO DE LINK VÁLIDO ---
 def buscar_edital_sesc(numero_edital):
     """
-    Busca o edital e retorna uma URL válida direta para o PDF.
-    Implementa a esteira de resiliência e validação ativa (S0-09).
+    Busca o edital e retorna a URL canônica do mural SESC DN.
+    Canonical URL: https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx
+    Rejeita licitacoes.sesc.com.br e caminhos inventados de /editais/*.pdf.
     """
-    # Lista de endpoints conhecidos / resolução canônica
-    known_links = {
-        "042/2026": "https://licitacoes.sesc.com.br/editais/2026/CC-042-2026-Academias-Cultura-Fisica.pdf",
-        "CC-042/2026": "https://licitacoes.sesc.com.br/editais/2026/CC-042-2026-Academias-Cultura-Fisica.pdf",
-        "SESC-DN-2026-042": "https://licitacoes.sesc.com.br/editais/2026/CC-042-2026-Academias-Cultura-Fisica.pdf",
-        "PE-015/2026": "https://licitacoes.sesc.com.br/editais/2026/PE-015-2026-Esteiras-Ergometricas.pdf",
-        "015/2026": "https://licitacoes.sesc.com.br/editais/2026/PE-015-2026-Esteiras-Ergometricas.pdf"
-    }
-
-    clean_num = numero_edital.strip().replace(" ", "")
-    for k, v in known_links.items():
-        if k in clean_num or clean_num in k:
-            return v
-
-    url_base = "https://www.sesc.com.br/licitacoes/"
-    try:
-        response = requests.get(url_base, timeout=5)
-        if response.status_code == 200:
-            soup = BeautifulSoup(response.text, "html.parser")
-            for link in soup.find_all("a", href=True):
-                href = link['href']
-                text = link.get_text()
-                if (numero_edital in text or numero_edital in href) and href.endswith('.pdf'):
-                    return href
-    except Exception as e:
-        print(f"Erro na requisição online: {e}")
-
-    # Fallback seguro: URL canônica para o PDF do edital solicitado
-    return f"https://licitacoes.sesc.com.br/editais/2026/Edital-{numero_edital.replace('/', '-')}.pdf"
+    # Portal Mural canônico oficial do SESC DN (Paradigma)
+    canonical_mural = "https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx"
+    return canonical_mural
 
 # --- MOTOR DE CLASSIFICAÇÃO ---
 def classify_edital_relevance(texto):

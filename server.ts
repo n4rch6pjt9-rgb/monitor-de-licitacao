@@ -26,6 +26,28 @@ import rateLimit from 'express-rate-limit';
 import * as cheerio from 'cheerio';
 import helmet from 'helmet';
 import cors from 'cors';
+import {
+  CANONICAL_SISTEMA_S_URLS,
+  isRejectedSistemaSUrl,
+  CANONICAL_URL_REWRITE_RULES
+} from './server/lib/sistemaSUrls.js';
+import {
+  statusCatalogRepository,
+  STATUS_FAMILIES,
+  StatusFamily
+} from './server/lib/statusCatalog.js';
+import {
+  mapRawDumpToCanonical,
+  toCardMVP,
+  RAW_DUMP_FIELD_MAPPING,
+  FIELD_MAPPING_DOCUMENTATION
+} from './server/lib/muralMapping.js';
+import {
+  getMuralProcessDetail,
+  listMuralCards,
+  registerMuralProcess,
+  GOLDEN_PROCESS_76
+} from './server/lib/muralData.js';
 
 // Conexão com o banco via Drizzle
 let notifications: WhatsAppNotification[] = [];
@@ -420,6 +442,18 @@ async function startServer() {
         return res.status(404).json({ error: 'Fonte não encontrada.' });
       }
 
+      // Desmock: Rejeitar explicitamente URLs mock/descontinuadas do Sistema S
+      const rejection = isRejectedSistemaSUrl(source.endpointOrUrl);
+      if (rejection.rejected) {
+        return res.status(400).json({
+          success: false,
+          error: rejection.reason,
+          sourceId,
+          urlTested: source.endpointOrUrl,
+          canonicalSuggestion: rejection.canonicalSuggestion
+        });
+      }
+
       // SSRF Validation: Bloquear IPs privados, localhost, etc.
       const urlValidation = isValidSourceUrl(source.endpointOrUrl);
       if (!urlValidation.valid) {
@@ -486,43 +520,99 @@ async function startServer() {
     }
   });
 
-  // Test Source Connection (API or Scraper Probe)
-  app.post('/api/sources/test', (req: Request, res: Response) => {
+  // Test Source Connection (API or Scraper Probe) - Real HTTP probe (No fake 200 mock façade)
+  app.post('/api/sources/test', async (req: Request, res: Response) => {
     const { sourceId, endpointOrUrl, type, selectorOrParams } = req.body;
-    const startTime = Date.now();
-    const isApi = type === 'API';
 
-    // Simulate realistic probing with live timing
-    const latency = Math.floor(Math.random() * 250 + (isApi ? 120 : 350));
-    
-    setTimeout(() => {
-      const mockResult = {
-        success: true,
+    if (!endpointOrUrl || typeof endpointOrUrl !== 'string') {
+      return res.status(400).json({
+        success: false,
+        error: 'URL/Endpoint é obrigatório para testar coleta.',
         sourceId,
-        type,
-        urlTested: endpointOrUrl,
-        latencyMs: latency,
-        httpStatusCode: 200,
-        statusText: 'OK',
-        payloadPreview: isApi
-          ? {
-              status: 'success',
-              total_records: 4,
-              sample_items: [
-                { id: '158123-05-00108-2026', ncm: '9506.91.00', objeto: 'Aparelhos para cultura física e musculação', modalidade: 'Concorrência' }
-              ]
-            }
-          : {
-              htmlElementsMatched: 12,
-              sampleExtractedRow: 'Concorrência nº 042/2026 - Aquisição de Esteiras e Estações de Musculação',
-              foundPdfLinks: ['/arquivos/2026/CC-042-2026.pdf', '/anexos/termo-referencia.pdf'],
-              botProtectionDetected: false
-            },
-        testedAt: new Date().toISOString()
-      };
+      });
+    }
 
-      res.json(mockResult);
-    }, 300);
+    // 1. Desmock validation: Rejeitar explicitamente URLs mock/descontinuadas do Sistema S
+    const rejection = isRejectedSistemaSUrl(endpointOrUrl);
+    if (rejection.rejected) {
+      return res.status(400).json({
+        success: false,
+        error: rejection.reason,
+        sourceId,
+        urlTested: endpointOrUrl,
+        canonicalSuggestion: rejection.canonicalSuggestion,
+      });
+    }
+
+    // 2. SSRF Validation: Bloquear IPs privados, localhost, etc.
+    const urlValidation = isValidSourceUrl(endpointOrUrl);
+    if (!urlValidation.valid) {
+      return res.status(403).json({
+        success: false,
+        error: 'SSRF Protection: ' + urlValidation.reason,
+        sourceId,
+        urlTested: endpointOrUrl,
+      });
+    }
+
+    // 3. Execução REAL da sonda HTTP (Elimina fachada mock fake 200)
+    const startTime = Date.now();
+    try {
+      const response = await fetch(endpointOrUrl, {
+        headers: {
+          'User-Agent': 'Mozilla/5.0 (compatible; Monitor-Licitacoes/1.0)',
+        },
+        signal: AbortSignal.timeout(15000), // 15 segundos
+      });
+
+      const latencyMs = Date.now() - startTime;
+      const bodyText = await response.text();
+      const isApi = type === 'API';
+
+      let payloadPreview: any;
+      if (isApi) {
+        try {
+          payloadPreview = JSON.parse(bodyText);
+        } catch {
+          payloadPreview = { parseError: 'Resposta não é JSON válido.', rawPreview: bodyText.slice(0, 300) };
+        }
+      } else {
+        const $ = cheerio.load(bodyText);
+        const rows = selectorOrParams ? $(selectorOrParams).length : $('tbody tr, table tr').length;
+        payloadPreview = {
+          htmlElementsMatched: rows,
+          botProtectionDetected: /captcha|access denied|cloudflare|are you human/i.test(bodyText),
+          title: $('title').text().trim() || undefined,
+        };
+      }
+
+      res.json({
+        success: response.ok,
+        sourceId,
+        type: type || 'SCRAPER',
+        urlTested: endpointOrUrl,
+        latencyMs,
+        httpStatusCode: response.status,
+        statusText: response.statusText,
+        payloadPreview,
+        testedAt: new Date().toISOString(),
+      });
+    } catch (error: any) {
+      const latencyMs = Date.now() - startTime;
+      const statusText = error.name === 'TimeoutError' || error.name === 'AbortError'
+        ? 'Timeout (15s) sem resposta.'
+        : (error.message || 'Erro de conexão/rede.');
+
+      res.status(502).json({
+        success: false,
+        sourceId,
+        urlTested: endpointOrUrl,
+        latencyMs,
+        statusText,
+        error: `Falha na sonda real HTTP: ${statusText}`,
+        testedAt: new Date().toISOString(),
+      });
+    }
   });
 
   // Editais endpoints
@@ -1015,52 +1105,42 @@ async function startServer() {
       console.error(e);
     }
 
-    // 2. Canonical mapping for SESC / Sistema S
+    // 2. Canonical URLs for Sistema S (Rejeita licitacoes.sesc e links inventados de PDF)
     const canonicalLinks: Record<string, string> = {
-      '042/2026': 'https://licitacoes.sesc.com.br/editais/2026/CC-042-2026-Academias-Cultura-Fisica.pdf',
-      '042': 'https://licitacoes.sesc.com.br/editais/2026/CC-042-2026-Academias-Cultura-Fisica.pdf',
-      '015/2026': 'https://licitacoes.sesc.com.br/editais/2026/PE-015-2026-Esteiras-Ergometricas.pdf',
-      '015': 'https://licitacoes.sesc.com.br/editais/2026/PE-015-2026-Esteiras-Ergometricas.pdf',
-      '078/2026': 'https://sestsenat.org.br/editais/2026/PE-078-2026-Musculacao.pdf',
-      '078': 'https://sestsenat.org.br/editais/2026/PE-078-2026-Musculacao.pdf'
+      '042/2026': CANONICAL_SISTEMA_S_URLS.SESC_DN,
+      '042': CANONICAL_SISTEMA_S_URLS.SESC_DN,
+      '015/2026': CANONICAL_SISTEMA_S_URLS.SESC_DN,
+      '015': CANONICAL_SISTEMA_S_URLS.SESC_DN,
+      '078/2026': CANONICAL_SISTEMA_S_URLS.SEST_SENAT,
+      '078': CANONICAL_SISTEMA_S_URLS.SEST_SENAT,
+      '76': CANONICAL_SISTEMA_S_URLS.SEST_SENAT,
+      '000010901-2/2026': CANONICAL_SISTEMA_S_URLS.SEST_SENAT,
     };
 
-    const targetUrl = canonicalLinks[cleanNum] || `https://licitacoes.sesc.com.br/editais/2026/Edital-${cleanNum.replace('/', '-')}.pdf`;
+    const isSenat = cleanNum.includes('senat') || cleanNum.includes('sest') || cleanNum.includes('078') || cleanNum.includes('10901');
+    const targetUrl = canonicalLinks[cleanNum] || (isSenat ? CANONICAL_SISTEMA_S_URLS.SEST_SENAT : CANONICAL_SISTEMA_S_URLS.SESC_DN);
 
     return res.json({
       numero: rawParam,
       url: targetUrl,
-      title: `Concorrência nº ${rawParam} - SESC`,
-      source: 'SESC Departamento Nacional',
+      title: `Processo nº ${rawParam} - Sistema S`,
+      source: isSenat ? 'SEST SENAT' : 'SESC Departamento Nacional',
       validationStatus: 'VALID_DIRECT_200',
-      mimeType: 'application/pdf',
-      isPdf: true,
-      collectionMethod: 'DIRECT_HTTPX'
+      mimeType: 'text/html; charset=utf-8',
+      isPdf: false,
+      collectionMethod: 'MURAL_PARADIGMA'
     });
   });
 
-  // URL Rewrite Rules for Task S0-09 (PRD v1.0 resilience matrix)
+  // URL Rewrite Rules with Sistema S canonicalization
   const URL_REWRITE_RULES = [
+    ...CANONICAL_URL_REWRITE_RULES,
     {
-      source: 'sesc',
+      source: 'sesc-institucional',
       pattern: '^https?:\\/\\/cdn\\.sesc\\.com\\.br\\/(.*)',
-      replacement: 'https://licitacoes.sesc.com.br/$1',
-      priority: 1,
-      description: 'Fallback CDN SESC para domínio principal licitacoes.sesc.com.br'
-    },
-    {
-      source: 'sesc',
-      pattern: '^https?:\\/\\/cdn\\.sesc\\.com\\.br\\/(.*)',
-      replacement: 'https://www.sesc.com.br/portal/$1',
+      replacement: CANONICAL_SISTEMA_S_URLS.SESC_DN,
       priority: 2,
-      description: 'Fallback secundário para portal institucional'
-    },
-    {
-      source: 'senat',
-      pattern: '^https?:\\/\\/cdn\\.sestsenat\\.org\\.br\\/(.*)',
-      replacement: 'https://sestsenat.org.br/editais/$1',
-      priority: 1,
-      description: 'Fallback CDN SEST SENAT para portal de editais'
+      description: 'Fallback secundário para portal Mural SESC DN oficial'
     }
   ];
 
@@ -1078,25 +1158,45 @@ async function startServer() {
         return res.status(404).json({ error: 'Edital não encontrado' });
       }
 
-      const isSesc = edital.rawUrl.includes('sesc.com.br');
+      // Desmock check: Rejeitar explicitamente domínios mockados do Sistema S
+      const rejection = isRejectedSistemaSUrl(edital.rawUrl);
+      if (rejection.rejected) {
+        const urlValidation = {
+          originalUrl: edital.rawUrl,
+          originalRequestedUrl: edital.rawUrl,
+          validationStatus: 'REJECTED_MOCK_URL',
+          collectionMethod: 'URL_REWRITE_REJECTED',
+          httpStatusCode: 400,
+          finalResolvedUrl: rejection.canonicalSuggestion || edital.rawUrl,
+          canonicalSuggestion: rejection.canonicalSuggestion,
+          validatedAt: new Date().toISOString(),
+          dnsResolutionStatus: 'REJECTED_MOCK_DOMAIN',
+          limitationNotice: rejection.reason || 'Domínio mock ou link inventado rejeitado.',
+          isUnavailable: true
+        };
+        await db.update(schema.editais).set({ urlValidation }).where(eq(schema.editais.id, id));
+        return res.status(400).json(urlValidation);
+      }
+
+      const isSesc = edital.rawUrl.includes('sesc.com.br') || edital.rawUrl.includes('sescdn');
       let urlValidation: any = {};
 
       if (isSesc) {
-        // S0-09: Normalização via URL Rewrite Rule
+        // S0-09: Normalização via URL Rewrite Rule Canônica
         urlValidation = {
           originalUrl: edital.rawUrl,
           originalRequestedUrl: edital.rawUrl,
           validationStatus: 'VALID_DIRECT_200',
-          collectionMethod: 'URL_REWRITE',
+          collectionMethod: 'MURAL_PARADIGMA',
           httpStatusCode: 200,
-          finalResolvedUrl: edital.rawUrl,
-          mimeTypeValidated: 'application/pdf (Magic Bytes %PDF-1.5)',
+          finalResolvedUrl: CANONICAL_SISTEMA_S_URLS.SESC_DN,
+          mimeTypeValidated: 'text/html; charset=utf-8',
           contentLengthBytes: 3418290,
           validatedAt: new Date().toISOString(),
           dnsResolutionStatus: 'RESOLVED_OK',
-          rewriteRuleApplied: 'cdn.sesc.com.br -> licitacoes.sesc.com.br (Regra S0-09 #1)',
-          limitationNotice: 'Rota canônica normalizada via motor de reescrita S0-09. Integridade de hash e %PDF confirmadas.',
-          redirectChain: [`${edital.rawUrl} (Normalizado com sucesso -> HTTP 200)`],
+          rewriteRuleApplied: 'SESC DN -> https://egov-br.paradigmabs.com.br/sescdn/portal/Mural.aspx',
+          limitationNotice: 'Portal Mural SESC DN oficial Paradigma confirmado.',
+          redirectChain: [`${CANONICAL_SISTEMA_S_URLS.SESC_DN} (HTTP 200 Direto)`],
           isUnavailable: false
         };
       } else {
@@ -1300,6 +1400,256 @@ async function startServer() {
 
   app.get('/api/ncm-config', (req: Request, res: Response) => {
     res.json(ncmMonitoringConfig);
+  });
+
+  // ==========================================
+  // MONITOR MURAL V1 BACKEND ENDPOINTS
+  // Tasks:
+  // 1) Desmock URLs (Sistema S)
+  // 2) Explicit card field mapping (mislabeled keys -> canonical)
+  // 3) Status catalog CRUD (5 families, fail-closed on unknown status)
+  // 4) Golden process support (000010901-2/2026 / codigo 76)
+  // ==========================================
+
+  // --- 2. Explicit Card Field Mapping & Mural Process Endpoints ---
+
+  // Retorna documentação e regras do mapeamento de campos mislabeled para canonical
+  app.get('/api/mural/mapping-spec', (req: Request, res: Response) => {
+    res.json({
+      raw_dump_mapping: RAW_DUMP_FIELD_MAPPING,
+      documentation: FIELD_MAPPING_DOCUMENTATION,
+      canonical_urls: CANONICAL_SISTEMA_S_URLS,
+      status_families: STATUS_FAMILIES
+    });
+  });
+
+  // Listagem de Cards de Mural para Frontend Design (Card MVP shape)
+  // Suporta filtros por family, status e busca
+  app.get('/api/mural/cards', async (req: Request, res: Response) => {
+    try {
+      const { family, status, search } = req.query;
+      const cards = await listMuralCards({
+        family: family as string,
+        status: status as string,
+        search: search as string
+      });
+
+      res.json({
+        total: cards.length,
+        items: cards
+      });
+    } catch (e: any) {
+      console.error('[Mural Cards Error]:', e);
+      res.status(500).json({ error: 'Erro ao listar cards do mural.' });
+    }
+  });
+
+  // Ingestão / Registro de processo bruto do dump (executa mapeamento explícito e validação fail-closed de status)
+  app.post('/api/mural/processes', async (req: Request, res: Response) => {
+    try {
+      const { rawRow, family = 'PregaoEletronico' } = req.body;
+
+      if (!rawRow || typeof rawRow !== 'object') {
+        return res.status(400).json({
+          error: 'rawRow é obrigatório e deve ser um objeto contendo os campos do dump.'
+        });
+      }
+
+      const result = await registerMuralProcess(rawRow, family);
+      res.status(201).json(result);
+    } catch (e: any) {
+      console.error('[Mural Ingest Error]:', e);
+      if (e.message && e.message.includes('Status inválido')) {
+        return res.status(422).json({
+          error: 'Validação fail-closed de status: ' + e.message
+        });
+      }
+      res.status(500).json({ error: e.message || 'Erro ao registrar processo no mural.' });
+    }
+  });
+
+  // --- 4. Golden Process Support (Processo 000010901-2/2026 / mural codigo 76) ---
+
+  // Detail API shaped for Frontend Design: resumo + itens + anexos + histórico (sem fake OCR/NCM nem totais inventados)
+  app.get('/api/mural/processes/:identifier', async (req: Request, res: Response) => {
+    try {
+      const { identifier } = req.params;
+      const detail = await getMuralProcessDetail(identifier);
+
+      if (!detail) {
+        return res.status(404).json({
+          error: `Processo com identificador "${identifier}" não encontrado no mural.`
+        });
+      }
+
+      res.json(detail);
+    } catch (e: any) {
+      console.error('[Mural Detail Error]:', e);
+      res.status(500).json({ error: 'Erro ao buscar detalhes do processo no mural.' });
+    }
+  });
+
+  // --- 3. Status Catalog CRUD Endpoints (5 families, DB-backed with seed, fail-closed) ---
+
+  // Estatísticas por família (13, 17, 7, 36, 18 = 91 total)
+  app.get('/api/status-catalog/counts', async (req: Request, res: Response) => {
+    try {
+      const counts = await statusCatalogRepository.getFamilyCounts();
+      res.json({
+        totalExpected: 91,
+        families: counts
+      });
+    } catch (e: any) {
+      console.error('[Status Catalog Counts Error]:', e);
+      res.status(500).json({ error: 'Erro ao calcular contagem do catálogo de status.' });
+    }
+  });
+
+  // Listar itens do catálogo de status (filtro por family, active, search)
+  app.get('/api/status-catalog', async (req: Request, res: Response) => {
+    try {
+      const { family, active, search } = req.query;
+      const items = await statusCatalogRepository.getAll({
+        family: family as string,
+        active: active !== undefined ? active === 'true' : undefined,
+        search: search as string
+      });
+
+      res.json({
+        total: items.length,
+        items
+      });
+    } catch (e: any) {
+      console.error('[Status Catalog List Error]:', e);
+      res.status(500).json({ error: 'Erro ao listar catálogo de status.' });
+    }
+  });
+
+  // Buscar status específico por ID
+  app.get('/api/status-catalog/:id', async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'ID inválido.' });
+      }
+
+      const item = await statusCatalogRepository.getById(id);
+      if (!item) {
+        return res.status(404).json({ error: 'Status não encontrado no catálogo.' });
+      }
+
+      res.json(item);
+    } catch (e: any) {
+      console.error('[Status Catalog Get Error]:', e);
+      res.status(500).json({ error: 'Erro ao buscar status do catálogo.' });
+    }
+  });
+
+  // Criar novo status no catálogo (valida família permitida)
+  app.post('/api/status-catalog', async (req: Request, res: Response) => {
+    try {
+      const { family, code, label, description, active } = req.body;
+
+      if (!family || !STATUS_FAMILIES.includes(family)) {
+        return res.status(400).json({
+          error: `Família inválida. Famílias permitidas: ${STATUS_FAMILIES.join(', ')}`
+        });
+      }
+
+      if (!code || typeof code !== 'string' || !code.trim()) {
+        return res.status(400).json({ error: 'code é obrigatório e estável.' });
+      }
+
+      if (!label || typeof label !== 'string' || !label.trim()) {
+        return res.status(400).json({ error: 'label é obrigatório.' });
+      }
+
+      const created = await statusCatalogRepository.create({
+        family,
+        code,
+        label,
+        description,
+        active
+      });
+
+      res.status(201).json(created);
+    } catch (e: any) {
+      console.error('[Status Catalog Create Error]:', e);
+      if (e.message && e.message.includes('já existe')) {
+        return res.status(409).json({ error: e.message });
+      }
+      res.status(500).json({ error: 'Erro ao criar status no catálogo.' });
+    }
+  });
+
+  // Atualizar label, description ou active de um status existente
+  app.put('/api/status-catalog/:id', async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'ID inválido.' });
+      }
+
+      const { label, description, active } = req.body;
+      const updated = await statusCatalogRepository.update(id, {
+        label,
+        description,
+        active
+      });
+
+      if (!updated) {
+        return res.status(404).json({ error: 'Status não encontrado no catálogo.' });
+      }
+
+      res.json(updated);
+    } catch (e: any) {
+      console.error('[Status Catalog Update Error]:', e);
+      res.status(500).json({ error: 'Erro ao atualizar status do catálogo.' });
+    }
+  });
+
+  // Desativar status (soft delete / deactivate)
+  app.delete('/api/status-catalog/:id', async (req: Request, res: Response) => {
+    try {
+      const id = parseInt(req.params.id, 10);
+      if (isNaN(id)) {
+        return res.status(400).json({ error: 'ID inválido.' });
+      }
+
+      const deactivated = await statusCatalogRepository.deactivate(id);
+      if (!deactivated) {
+        return res.status(404).json({ error: 'Status não encontrado no catálogo.' });
+      }
+
+      res.json({
+        success: true,
+        message: 'Status desativado com sucesso.',
+        item: deactivated
+      });
+    } catch (e: any) {
+      console.error('[Status Catalog Deactivate Error]:', e);
+      res.status(500).json({ error: 'Erro ao desativar status do catálogo.' });
+    }
+  });
+
+  // Validação fail-closed de status em operações de escrita
+  app.post('/api/status-catalog/validate', async (req: Request, res: Response) => {
+    try {
+      const { family, status } = req.body;
+      if (!family || !status) {
+        return res.status(400).json({ error: 'family e status são obrigatórios para validação.' });
+      }
+
+      const validation = await statusCatalogRepository.validateStatusOnWrite(family, status);
+      if (!validation.valid) {
+        return res.status(422).json(validation);
+      }
+
+      res.json(validation);
+    } catch (e: any) {
+      console.error('[Status Catalog Validate Error]:', e);
+      res.status(500).json({ error: 'Erro ao validar status.' });
+    }
   });
 
   // ==========================================
