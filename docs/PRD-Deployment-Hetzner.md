@@ -129,7 +129,7 @@ container — aceitável para uma ferramenta interna B2B.
 - [x] Workflow `.github/workflows/deploy.yml` (build + push GHCR + deploy SSH)
 - [x] `DEPLOY_NOTES.md` com o passo a passo manual de primeira configuração
 - [ ] Criar usuário `deploy` na VPS e chave SSH dedicada (passo manual, ver DEPLOY_NOTES.md)
-- [x] Domínio definido: `licitacoes-gymsite.com.br`
+- [x] Domínio definido: `licitacoes.getgymsite.com.br`
 - [ ] Criar `/opt/licitacoes/.env.production` na VPS com as chaves reais
 - [ ] Adicionar a regra de `ingress` no `cloudflared/config.yml` e rotear o DNS do túnel
 - [ ] Criar swap de 2–4 GB na VPS como margem de segurança
