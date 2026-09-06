@@ -1,7 +1,9 @@
 /**
  * HTTP Client centralizado para o Monitor de Licitações.
- * Suporta autenticação via Bearer JWT (localStorage / sessionStorage / window / cookie)
- * e failover com x-api-key (Regra 3: Segurança Default-On).
+ * Suporta autenticação via Bearer JWT (localStorage / sessionStorage / window).
+ * Em produção: apenas Authorization Bearer é enviado.
+ * Em desenvolvimento local: injeta x-api-key somente se VITE_MONITOR_API_KEY
+ * for explicitamente definido via env (sem qualquer fallback hardcoded).
  */
 
 const TOKEN_STORAGE_KEY = 'auth_token';
@@ -51,8 +53,11 @@ export async function assertOk(res: Response): Promise<void> {
 }
 
 /**
- * Wrapper sobre fetch para chamadas à API, injetando Bearer JWT e chaves de API
- * em todas as requisições (GET, POST, PUT, DELETE).
+ * Wrapper sobre fetch para chamadas à API.
+ * 1. Injeta Bearer JWT para todas as chamadas autenticadas quando disponível no storage.
+ * 2. Em ambiente de desenvolvimento local (DEV only), se VITE_MONITOR_API_KEY estiver
+ *    explicitamente configurado, pode enviá-lo como x-api-key. Caso contrário, nenhum
+ *    cabeçalho x-api-key é injetado.
  */
 export async function apiClient(url: string, options: RequestInit = {}): Promise<Response> {
   const headers = new Headers(options.headers || {});
@@ -63,12 +68,13 @@ export async function apiClient(url: string, options: RequestInit = {}): Promise
     headers.set('Authorization', `Bearer ${token}`);
   }
 
-  // 2. Injeta x-api-key como fallback de autenticação (dev / workers / service key)
-  const apiKey =
-    (typeof import.meta !== 'undefined' && import.meta.env?.VITE_MONITOR_API_KEY) ||
-    'monitor-dev-key';
-  if (apiKey && !headers.has('x-api-key')) {
-    headers.set('x-api-key', apiKey);
+  // 2. Local DEV ONLY: se VITE_MONITOR_API_KEY foi explicitamente setado em import.meta.env
+  // Sem qualquer string hardcoded ou fallback default.
+  if (import.meta.env?.DEV && import.meta.env?.VITE_MONITOR_API_KEY) {
+    const explicitDevKey = import.meta.env.VITE_MONITOR_API_KEY.trim();
+    if (explicitDevKey && !headers.has('x-api-key')) {
+      headers.set('x-api-key', explicitDevKey);
+    }
   }
 
   return fetch(url, {
