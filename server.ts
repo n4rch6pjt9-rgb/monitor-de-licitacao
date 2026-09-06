@@ -144,12 +144,33 @@ async function startServer() {
     referrerPolicy: { policy: 'strict-origin-when-cross-origin' },
   }));
 
-  // CORS: Whitelistar apenas origens conhecidas
-  // Em produção, configurar para domínios da aplicação
+  // CORS: allowlist via CORS_ORIGINS (comma-separated).
+  // TODO(Marcelo): set CORS_ORIGINS in production to the real front-end origins
+  // (e.g. https://app.example.com,https://www.example.com). Do not invent domains.
+  // If unset in production, browser cross-origin requests are denied (fail-closed).
+  function resolveCorsOrigins(): string[] {
+    const fromEnv = (process.env.CORS_ORIGINS || '')
+      .split(',')
+      .map((s) => s.trim())
+      .filter(Boolean);
+    if (process.env.NODE_ENV === 'production') {
+      if (fromEnv.length === 0) {
+        console.warn(
+          '[CORS] CORS_ORIGINS is unset in production — denying browser cross-origin requests until configured.'
+        );
+      }
+      return fromEnv;
+    }
+    const devDefaults = [
+      'http://localhost:3000',
+      'http://localhost:3001',
+      'http://127.0.0.1:3000',
+    ];
+    return [...new Set([...devDefaults, ...fromEnv])];
+  }
+
   app.use(cors({
-    origin: process.env.NODE_ENV === 'production'
-      ? ['https://your-domain.com'] // Substituir em produção
-      : ['http://localhost:3000', 'http://localhost:3001', 'http://127.0.0.1:3000'],
+    origin: resolveCorsOrigins(),
     credentials: true,
     methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
     allowedHeaders: ['Content-Type', 'Authorization', 'x-api-key'],
@@ -161,6 +182,16 @@ async function startServer() {
     windowMs: 15 * 60 * 1000, // 15 minutos
     max: 5, // máximo 5 requisições
     message: 'Muitas tentativas de login. Tente novamente em 15 minutos.',
+    standardHeaders: true,
+    legacyHeaders: false,
+  });
+
+  // Rate limiting: AI / Gemini consumption (cost + abuse protection)
+  // 30 requests / 15 min / IP — covers analyze-ai, gemini tech-spec, revops AI
+  const aiLimiter = rateLimit({
+    windowMs: 15 * 60 * 1000,
+    max: 30,
+    message: 'Limite de requisições de IA atingido. Tente novamente em alguns minutos.',
     standardHeaders: true,
     legacyHeaders: false,
   });
@@ -178,6 +209,14 @@ async function startServer() {
       const dbUser = rows[0];
 
       if (!dbUser || !verifyPassword(password, dbUser.passwordHash)) {
+        // Log failed auth without secrets/passwords (Regra 12: audit trail)
+        const safeEmail =
+          typeof email === 'string' ? email.trim().slice(0, 120) : undefined;
+        console.warn('[Auth] Failed login attempt', {
+          email: safeEmail,
+          ip: req.ip,
+          at: new Date().toISOString(),
+        });
         return res.status(401).json({ error: 'Credenciais inválidas' });
       }
 
@@ -619,7 +658,7 @@ async function startServer() {
   // ==========================================
   // RevOps Endpoints (Squad de Inteligência)
   // ==========================================
-  app.get('/api/crm/revops/insights', async (req: Request, res: Response) => {
+  app.get('/api/crm/revops/insights', aiLimiter, async (req: Request, res: Response) => {
     try {
       const tenantId = (req.query.tenantId as string) || '1';
       const { RevOpsAgent } = await import('./server/crm_agentic/agents/revops_agent');
@@ -633,7 +672,7 @@ async function startServer() {
     }
   });
 
-  app.post('/api/crm/revops/report', async (req: Request, res: Response) => {
+  app.post('/api/crm/revops/report', aiLimiter, async (req: Request, res: Response) => {
     try {
       const { tenantId, recipientPhone } = req.body;
       const tid = tenantId || '1';
@@ -1112,7 +1151,7 @@ async function startServer() {
   });
 
   // Gemini AI Analysis endpoint
-  app.post('/api/editais/:id/analyze-ai', async (req: Request, res: Response) => {
+  app.post('/api/editais/:id/analyze-ai', aiLimiter, async (req: Request, res: Response) => {
     try {
       const { id } = req.params;
       const [edital] = await db.select().from(schema.editais).where(eq(schema.editais.id, id));
@@ -1131,7 +1170,7 @@ async function startServer() {
   });
 
   // Gemini AI Technical Specification & Supplier/Product research endpoint (Item 4.3)
-  app.post('/api/gemini/analyze-technical-specification', async (req: Request, res: Response) => {
+  app.post('/api/gemini/analyze-technical-specification', aiLimiter, async (req: Request, res: Response) => {
     try {
       const { clauseText, editalTitle, entityName, processNumber } = req.body;
       if (!clauseText || typeof clauseText !== 'string') {
