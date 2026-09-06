@@ -104,7 +104,7 @@ No repositório, em Settings → Secrets and variables → Actions, adicione:
 | `HETZNER_SSH_KEY` | conteúdo do arquivo `~/.ssh/licitacoes_deploy_key` (a chave PRIVADA do passo 0) |
 
 A partir daí, todo push na `main` builda a imagem, publica em
-`ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao` e faz o deploy automático via
+`ghcr.io/monitor-licitacao/monitor-de-licitacao` e faz o deploy automático via
 SSH, sem downtime perceptível fora da janela de troca do container.
 
 ## O que este plano NÃO inclui ainda

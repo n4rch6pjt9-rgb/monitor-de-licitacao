@@ -10,7 +10,7 @@ concurrency:
   cancel-in-progress: false
 
 env:
-  IMAGE: ghcr.io/n4rch6pjt9-rgb/monitor-de-licitacao
+  IMAGE: ghcr.io/monitor-licitacao/monitor-de-licitacao
 
 jobs:
   build-and-push:
@@ -33,6 +33,9 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
 
       - name: Build e push da imagem
         uses: docker/build-push-action@v6
