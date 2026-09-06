@@ -11,6 +11,9 @@ import {
   toCardMVP,
 } from './muralMapping.js';
 import { statusCatalogRepository } from './statusCatalog.js';
+import { db, isDatabaseConfigured } from '../db/index.js';
+import * as schema from '../db/schema.js';
+import { eq, sql } from 'drizzle-orm';
 
 export interface MuralProcessItem {
   numero_item: number;
@@ -501,21 +504,62 @@ const SESC_DN_PROCESS_188: MuralProcessDetail = {
     },
   ],
 };
-MURAL_PROCESSES_STORE.set('188', SESC_DN_PROCESS_188);
-MURAL_PROCESSES_STORE.set('PE 2026012000042', SESC_DN_PROCESS_188);
+// Scoped In-Memory Stores by Tenant
+const MURAL_PROCESSES_STORE_BY_TENANT: Map<number, Map<string, MuralProcessDetail>> = new Map();
+
+export function getTenantMuralStore(tenantId: number = 1): Map<string, MuralProcessDetail> {
+  let store = MURAL_PROCESSES_STORE_BY_TENANT.get(tenantId);
+  if (!store) {
+    store = new Map<string, MuralProcessDetail>();
+    // Default tenant 1 is pre-seeded with golden process 76 and SESC DN 188
+    if (tenantId === 1) {
+      store.set('76', GOLDEN_PROCESS_76);
+      store.set('000010901-2/2026', GOLDEN_PROCESS_76);
+      store.set('188', SESC_DN_PROCESS_188);
+      store.set('PE 2026012000042', SESC_DN_PROCESS_188);
+    }
+    MURAL_PROCESSES_STORE_BY_TENANT.set(tenantId, store);
+  }
+  return store;
+}
 
 export async function getMuralProcessDetail(
-  identifier: string
+  identifier: string,
+  tenantId: number = 1
 ): Promise<MuralProcessDetail | null> {
   if (!identifier) return null;
   const clean = identifier.trim();
-  const direct = MURAL_PROCESSES_STORE.get(clean);
+
+  // If DB is configured, query muralProcesses for this tenant
+  if (isDatabaseConfigured) {
+    try {
+      const [row] = await db
+        .select()
+        .from(schema.muralProcesses)
+        .where(
+          sql`${schema.muralProcesses.tenantId} = ${tenantId} AND (${schema.muralProcesses.codigo} = ${clean} OR ${schema.muralProcesses.numeroProcesso} = ${clean})`
+        );
+      if (row) {
+        return {
+          resumo: row.resumo,
+          itens: (row.itens as any[]) || [],
+          anexos: (row.anexos as any[]) || [],
+          historico: (row.historico as any[]) || [],
+        };
+      }
+    } catch {
+      // Fallback
+    }
+  }
+
+  const store = getTenantMuralStore(tenantId);
+  const direct = store.get(clean);
   if (direct) {
     return direct;
   }
 
-  // Lookup by codigo or numero_processo
-  for (const item of MURAL_PROCESSES_STORE.values()) {
+  // Lookup by codigo or numero_processo within this tenant's store
+  for (const item of store.values()) {
     if (
       item.resumo.codigo === clean ||
       item.resumo.numero_processo.toLowerCase() === clean.toLowerCase()
@@ -527,15 +571,60 @@ export async function getMuralProcessDetail(
   return null;
 }
 
-export async function listMuralCards(filters?: {
-  family?: string;
-  status?: string;
-  search?: string;
-}): Promise<MuralCardMVP[]> {
+export async function listMuralCards(
+  tenantIdOrFilters?: number | { family?: string; status?: string; search?: string },
+  maybeFilters?: { family?: string; status?: string; search?: string }
+): Promise<MuralCardMVP[]> {
+  let tenantId = 1;
+  let filters: { family?: string; status?: string; search?: string } | undefined;
+  if (typeof tenantIdOrFilters === 'number') {
+    tenantId = tenantIdOrFilters;
+    filters = maybeFilters;
+  } else if (tenantIdOrFilters && typeof tenantIdOrFilters === 'object') {
+    filters = tenantIdOrFilters;
+    tenantId = 1;
+  }
   const cards: MuralCardMVP[] = [];
   const seenCodes = new Set<string>();
 
-  for (const item of MURAL_PROCESSES_STORE.values()) {
+  // If DB is configured, query muralProcesses for this tenant
+  if (isDatabaseConfigured) {
+    try {
+      const rows = await db
+        .select()
+        .from(schema.muralProcesses)
+        .where(eq(schema.muralProcesses.tenantId, tenantId));
+      if (rows && rows.length > 0) {
+        for (const row of rows) {
+          if (seenCodes.has(row.codigo)) continue;
+          seenCodes.add(row.codigo);
+
+          const canonical: CanonicalMuralProcess = {
+            codigo: row.codigo,
+            numero_processo: row.numeroProcesso,
+            unidade_compradora: row.unidadeCompradora || '—',
+            objeto: row.objeto || '—',
+            modalidade: row.modalidade || '—',
+            inicio_propostas: row.resumo?.inicio_propostas || null,
+            termino_propostas: row.resumo?.termino_propostas || null,
+            inicio_inscricoes: null,
+            status_bruto: row.resumo?.situacao || null,
+            status_normalizado: row.statusNormalizado,
+            link_canonico: row.linkCanonico || '',
+            fonte: row.fonte || '',
+          };
+
+          cards.push(toCardMVP(canonical, row.statusNormalizado));
+        }
+        return cards;
+      }
+    } catch {
+      // Fallback to memory
+    }
+  }
+
+  const store = getTenantMuralStore(tenantId);
+  for (const item of store.values()) {
     if (seenCodes.has(item.resumo.codigo)) {
       continue;
     }
@@ -586,17 +675,22 @@ export async function listMuralCards(filters?: {
 }
 
 /**
- * Register a new process into the mural store after mapping and status validation
+ * Register a new process into the mural store after mapping and status validation for this tenant
  */
 export async function registerMuralProcess(
   rawRow: Record<string, any>,
-  family: string = 'PregaoEletronico'
+  family: string = 'PregaoEletronico',
+  tenantId: number = 1
 ): Promise<{ card: MuralCardMVP; detail: MuralProcessDetail }> {
   const canonical = mapRawDumpToCanonical(rawRow);
 
-  // Validate status fail-closed
+  // Validate status fail-closed for this tenant
   const statusToValidate = canonical.status_bruto || 'AGENDADO_PUBLICADO';
-  const validation = await statusCatalogRepository.validateStatusOnWrite(family, statusToValidate);
+  const validation = await statusCatalogRepository.validateStatusOnWrite(
+    family,
+    statusToValidate,
+    tenantId
+  );
   if (!validation.valid) {
     throw new Error(
       `Falha de validação de status: ${validation.error || 'Status não catalogado'}`
@@ -637,9 +731,36 @@ export async function registerMuralProcess(
     historico: [],
   };
 
-  MURAL_PROCESSES_STORE.set(canonical.codigo, detail);
+  // DB insert if configured
+  if (isDatabaseConfigured) {
+    try {
+      await db
+        .insert(schema.muralProcesses)
+        .values({
+          id: `mural-${tenantId}-${canonical.codigo}`,
+          tenantId,
+          codigo: canonical.codigo,
+          numeroProcesso: canonical.numero_processo,
+          unidadeCompradora: canonical.unidade_compradora,
+          objeto: canonical.objeto,
+          modalidade: canonical.modalidade,
+          statusNormalizado: status_normalizado,
+          linkCanonico: canonical.link_canonico,
+          fonte: canonical.fonte || 'Paradigma Mural',
+          resumo: detail.resumo,
+          itens: detail.itens,
+          anexos: detail.anexos,
+          historico: detail.historico,
+        });
+    } catch {
+      // Fallback
+    }
+  }
+
+  const store = getTenantMuralStore(tenantId);
+  store.set(canonical.codigo, detail);
   if (canonical.numero_processo && canonical.numero_processo !== '—') {
-    MURAL_PROCESSES_STORE.set(canonical.numero_processo, detail);
+    store.set(canonical.numero_processo, detail);
   }
 
   const card = toCardMVP(canonical, status_normalizado);

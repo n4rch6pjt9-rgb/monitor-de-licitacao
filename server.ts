@@ -48,6 +48,11 @@ import {
   registerMuralProcess,
   GOLDEN_PROCESS_76
 } from './server/lib/muralData.js';
+import {
+  getAuthenticatedTenantId,
+  requireAdminRole,
+  validateTenantBodyMatch
+} from './server/lib/tenantAuth.js';
 
 // Conexão com o banco via Drizzle
 let notifications: WhatsAppNotification[] = [];
@@ -248,7 +253,8 @@ async function startServer() {
         id: dbUser.id,
         name: dbUser.name,
         email: dbUser.email,
-        tenantId: dbUser.tenantId
+        tenantId: dbUser.tenantId,
+        role: dbUser.role || 'admin',
       };
 
       const token = jwt.sign(user, process.env.JWT_SECRET!, { expiresIn: '12h' });
@@ -314,7 +320,7 @@ async function startServer() {
         message: 'Regra 3: API protegida. Forneça o header Authorization Bearer ou x-api-key válido.'
       });
     }
-    req.user = { tenantId: 1 };
+    req.user = { tenantId: 1, role: 'admin' };
     next();
   });
 
@@ -1407,14 +1413,18 @@ async function startServer() {
   // Tasks:
   // 1) Desmock URLs (Sistema S)
   // 2) Explicit card field mapping (mislabeled keys -> canonical)
-  // 3) Status catalog CRUD (5 families, fail-closed on unknown status)
+  // 3) Status catalog CRUD (5 families, fail-closed on unknown status, admin-only mutations)
   // 4) Golden process support (000010901-2/2026 / codigo 76)
+  // 5) Tenant-scoping (req.user.tenantId only, fail-closed, IDOR protection)
   // ==========================================
 
-  // --- 2. Explicit Card Field Mapping & Mural Process Endpoints ---
+  // --- 2. Explicit Card Field Mapping & Mural Process Endpoints (Tenant-Scoped) ---
 
   // Retorna documentação e regras do mapeamento de campos mislabeled para canonical
   app.get('/api/mural/mapping-spec', (req: Request, res: Response) => {
+    const tenantId = getAuthenticatedTenantId(req, res);
+    if (tenantId === null) return;
+
     res.json({
       raw_dump_mapping: RAW_DUMP_FIELD_MAPPING,
       documentation: FIELD_MAPPING_DOCUMENTATION,
@@ -1424,11 +1434,14 @@ async function startServer() {
   });
 
   // Listagem de Cards de Mural para Frontend Design (Card MVP shape)
-  // Suporta filtros por family, status e busca
+  // Escopo estrito por req.user.tenantId (IDOR protection)
   app.get('/api/mural/cards', async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
       const { family, status, search } = req.query;
-      const cards = await listMuralCards({
+      const cards = await listMuralCards(tenantId, {
         family: family as string,
         status: status as string,
         search: search as string
@@ -1444,9 +1457,15 @@ async function startServer() {
     }
   });
 
-  // Ingestão / Registro de processo bruto do dump (executa mapeamento explícito e validação fail-closed de status)
+  // Ingestão / Registro de processo bruto do dump
+  // Escopo estrito por req.user.tenantId (nunca aceita tenantId do body/query para authz)
   app.post('/api/mural/processes', async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
+      if (!validateTenantBodyMatch(req, res, tenantId)) return;
+
       const { rawRow, family = 'PregaoEletronico' } = req.body;
 
       if (!rawRow || typeof rawRow !== 'object') {
@@ -1455,7 +1474,7 @@ async function startServer() {
         });
       }
 
-      const result = await registerMuralProcess(rawRow, family);
+      const result = await registerMuralProcess(rawRow, family, tenantId);
       res.status(201).json(result);
     } catch (e: any) {
       console.error('[Mural Ingest Error]:', e);
@@ -1470,15 +1489,19 @@ async function startServer() {
 
   // --- 4. Golden Process Support (Processo 000010901-2/2026 / mural codigo 76) ---
 
-  // Detail API shaped for Frontend Design: resumo + itens + anexos + histórico (sem fake OCR/NCM nem totais inventados)
+  // Detail API shaped for Frontend Design: resumo + itens + anexos + histórico
+  // Escopo estrito por req.user.tenantId (IDOR protection: processo de outro tenant retorna 404)
   app.get('/api/mural/processes/:identifier', async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
       const { identifier } = req.params;
-      const detail = await getMuralProcessDetail(identifier);
+      const detail = await getMuralProcessDetail(identifier, tenantId);
 
       if (!detail) {
         return res.status(404).json({
-          error: `Processo com identificador "${identifier}" não encontrado no mural.`
+          error: `Processo com identificador "${identifier}" não encontrado no mural para este tenant.`
         });
       }
 
@@ -1489,12 +1512,15 @@ async function startServer() {
     }
   });
 
-  // --- 3. Status Catalog CRUD Endpoints (5 families, DB-backed with seed, fail-closed) ---
+  // --- 3. Status Catalog CRUD Endpoints (5 families, tenant-scoped, fail-closed) ---
 
-  // Estatísticas por família (13, 17, 7, 36, 18 = 91 total)
+  // Estatísticas por família (13, 17, 7, 36, 18 = 91 total) - Scoped per tenant
   app.get('/api/status-catalog/counts', async (req: Request, res: Response) => {
     try {
-      const counts = await statusCatalogRepository.getFamilyCounts();
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
+      const counts = await statusCatalogRepository.getFamilyCounts(tenantId);
       res.json({
         totalExpected: 91,
         families: counts
@@ -1505,11 +1531,14 @@ async function startServer() {
     }
   });
 
-  // Listar itens do catálogo de status (filtro por family, active, search)
+  // Listar itens do catálogo de status (filtro por family, active, search) - Scoped per tenant
   app.get('/api/status-catalog', async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
       const { family, active, search } = req.query;
-      const items = await statusCatalogRepository.getAll({
+      const items = await statusCatalogRepository.getAll(tenantId, {
         family: family as string,
         active: active !== undefined ? active === 'true' : undefined,
         search: search as string
@@ -1525,17 +1554,20 @@ async function startServer() {
     }
   });
 
-  // Buscar status específico por ID
+  // Buscar status específico por ID - Scoped per tenant (IDOR protection)
   app.get('/api/status-catalog/:id', async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
       const id = parseInt(req.params.id, 10);
       if (isNaN(id)) {
         return res.status(400).json({ error: 'ID inválido.' });
       }
 
-      const item = await statusCatalogRepository.getById(id);
+      const item = await statusCatalogRepository.getById(id, tenantId);
       if (!item) {
-        return res.status(404).json({ error: 'Status não encontrado no catálogo.' });
+        return res.status(404).json({ error: 'Status não encontrado no catálogo para este tenant.' });
       }
 
       res.json(item);
@@ -1545,9 +1577,14 @@ async function startServer() {
     }
   });
 
-  // Criar novo status no catálogo (valida família permitida)
-  app.post('/api/status-catalog', async (req: Request, res: Response) => {
+  // Criar novo status no catálogo - Requer role admin no tenant
+  app.post('/api/status-catalog', requireAdminRole, async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
+      if (!validateTenantBodyMatch(req, res, tenantId)) return;
+
       const { family, code, label, description, active } = req.body;
 
       if (!family || !STATUS_FAMILIES.includes(family)) {
@@ -1565,6 +1602,7 @@ async function startServer() {
       }
 
       const created = await statusCatalogRepository.create({
+        tenantId,
         family,
         code,
         label,
@@ -1582,23 +1620,28 @@ async function startServer() {
     }
   });
 
-  // Atualizar label, description ou active de um status existente
-  app.put('/api/status-catalog/:id', async (req: Request, res: Response) => {
+  // Atualizar label, description ou active de um status existente - Requer role admin no tenant
+  app.put('/api/status-catalog/:id', requireAdminRole, async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
+      if (!validateTenantBodyMatch(req, res, tenantId)) return;
+
       const id = parseInt(req.params.id, 10);
       if (isNaN(id)) {
         return res.status(400).json({ error: 'ID inválido.' });
       }
 
       const { label, description, active } = req.body;
-      const updated = await statusCatalogRepository.update(id, {
+      const updated = await statusCatalogRepository.update(id, tenantId, {
         label,
         description,
         active
       });
 
       if (!updated) {
-        return res.status(404).json({ error: 'Status não encontrado no catálogo.' });
+        return res.status(404).json({ error: 'Status não encontrado no catálogo para este tenant.' });
       }
 
       res.json(updated);
@@ -1608,17 +1651,20 @@ async function startServer() {
     }
   });
 
-  // Desativar status (soft delete / deactivate)
-  app.delete('/api/status-catalog/:id', async (req: Request, res: Response) => {
+  // Desativar status (soft delete / deactivate) - Requer role admin no tenant
+  app.delete('/api/status-catalog/:id', requireAdminRole, async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
       const id = parseInt(req.params.id, 10);
       if (isNaN(id)) {
         return res.status(400).json({ error: 'ID inválido.' });
       }
 
-      const deactivated = await statusCatalogRepository.deactivate(id);
+      const deactivated = await statusCatalogRepository.deactivate(id, tenantId);
       if (!deactivated) {
-        return res.status(404).json({ error: 'Status não encontrado no catálogo.' });
+        return res.status(404).json({ error: 'Status não encontrado no catálogo para este tenant.' });
       }
 
       res.json({
@@ -1632,15 +1678,18 @@ async function startServer() {
     }
   });
 
-  // Validação fail-closed de status em operações de escrita
+  // Validação fail-closed de status em operações de escrita (tenant-scoped)
   app.post('/api/status-catalog/validate', async (req: Request, res: Response) => {
     try {
+      const tenantId = getAuthenticatedTenantId(req, res);
+      if (tenantId === null) return;
+
       const { family, status } = req.body;
       if (!family || !status) {
         return res.status(400).json({ error: 'family e status são obrigatórios para validação.' });
       }
 
-      const validation = await statusCatalogRepository.validateStatusOnWrite(family, status);
+      const validation = await statusCatalogRepository.validateStatusOnWrite(family, status, tenantId);
       if (!validation.valid) {
         return res.status(422).json(validation);
       }

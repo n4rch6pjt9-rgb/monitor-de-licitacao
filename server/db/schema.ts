@@ -39,6 +39,7 @@ export const users = pgTable('users', {
   name: text('name').notNull(),
   email: text('email').notNull().unique(),
   passwordHash: text('password_hash').notNull(),
+  role: text('role').default('user').notNull(), // 'admin' | 'user'
   createdAt: timestamp('created_at').defaultNow(),
 });
 
@@ -140,14 +141,40 @@ export const crmLogs = pgTable('crm_logs', {
   timestamp: timestamp('timestamp').defaultNow(),
 });
 
-// STATUS CATALOG (5 famílias do Sistema S / Paradigma)
+// STATUS CATALOG (5 famílias do Sistema S / Paradigma) - Scoped per tenant
 export const statusCatalog = pgTable('status_catalog', {
   id: serial('id').primaryKey(),
+  tenantId: integer('tenant_id').references(() => tenants.id).default(1).notNull(),
   family: text('family').notNull(), // 'ProcessoDeContratacao' | 'ProcessosPresenciais' | 'CotacaoDeOrcamento' | 'PregaoEletronico' | 'CompraDireta'
   code: text('code').notNull(), // Stable identifier, e.g. 'HOMOLOGADO', 'EM_ANDAMENTO'
   label: text('label').notNull(), // Editable label
   description: text('description'), // Editable description
   active: boolean('active').default(true).notNull(),
+  createdAt: timestamp('created_at').defaultNow(),
+  updatedAt: timestamp('updated_at').defaultNow(),
+});
+
+// MURAL PROCESSES (Monitor Mural do Sistema S / Paradigma) - Scoped per tenant
+export const muralProcesses = pgTable('mural_processes', {
+  id: text('id').primaryKey(), // composite or codigo
+  tenantId: integer('tenant_id').references(() => tenants.id).notNull(),
+  codigo: text('codigo').notNull(),
+  numeroProcesso: text('numero_processo').notNull(),
+  unidadeCompradora: text('unidade_compradora'),
+  objeto: text('objeto'),
+  modalidade: text('modalidade'),
+  statusNormalizado: jsonb('status_normalizado').$type<{
+    code: string;
+    label: string;
+    family: string;
+    is_valid: boolean;
+  }>(),
+  linkCanonico: text('link_canonico'),
+  fonte: text('fonte'),
+  resumo: jsonb('resumo').$type<any>(),
+  itens: jsonb('itens').$type<any[]>(),
+  anexos: jsonb('anexos').$type<any[]>(),
+  historico: jsonb('historico').$type<any[]>(),
   createdAt: timestamp('created_at').defaultNow(),
   updatedAt: timestamp('updated_at').defaultNow(),
 });

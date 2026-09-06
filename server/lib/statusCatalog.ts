@@ -27,6 +27,7 @@ export type StatusFamily = (typeof STATUS_FAMILIES)[number];
 
 export interface StatusCatalogItem {
   id?: number;
+  tenantId?: number;
   family: StatusFamily;
   code: string;
   label: string;
@@ -687,7 +688,7 @@ export const INITIAL_STATUS_CATALOG_SEED: StatusCatalogItem[] = [
 ];
 
 /**
- * In-memory repository (synchronized with DB if reachable)
+ * In-memory repository (synchronized with DB if reachable) - Scoped per tenant
  */
 class StatusCatalogRepository {
   private items: StatusCatalogItem[] = [];
@@ -695,28 +696,53 @@ class StatusCatalogRepository {
   private isInitialized: boolean = false;
 
   constructor() {
-    this.initFromSeed();
+    this.initDefaultSeed();
   }
 
-  private initFromSeed() {
-    this.items = INITIAL_STATUS_CATALOG_SEED.map((seed, idx) => ({
-      ...seed,
-      id: idx + 1,
-      createdAt: new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    }));
-    this.nextId = this.items.length + 1;
+  private initDefaultSeed() {
+    this.ensureTenantSeeded(1);
     this.isInitialized = true;
   }
 
-  async getAll(filter?: { family?: string; active?: boolean; search?: string }): Promise<StatusCatalogItem[]> {
+  ensureTenantSeeded(tenantId: number = 1): void {
+    const existing = this.items.filter((i) => i.tenantId === tenantId);
+    if (existing.length === 0) {
+      const seeded = INITIAL_STATUS_CATALOG_SEED.map((seed) => ({
+        ...seed,
+        id: this.nextId++,
+        tenantId,
+        createdAt: new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      }));
+      this.items.push(...seeded);
+    }
+  }
+
+  async getAll(
+    tenantIdOrFilter?: number | { family?: string; active?: boolean; search?: string },
+    maybeFilter?: { family?: string; active?: boolean; search?: string }
+  ): Promise<StatusCatalogItem[]> {
+    let tenantId = 1;
+    let filter: { family?: string; active?: boolean; search?: string } | undefined;
+
+    if (typeof tenantIdOrFilter === 'number') {
+      tenantId = tenantIdOrFilter;
+      filter = maybeFilter;
+    } else if (tenantIdOrFilter && typeof tenantIdOrFilter === 'object') {
+      filter = tenantIdOrFilter;
+      tenantId = 1;
+    }
     if (isDatabaseConfigured) {
       try {
-        let query = db.select().from(schema.statusCatalog);
+        let query = db
+          .select()
+          .from(schema.statusCatalog)
+          .where(eq(schema.statusCatalog.tenantId, tenantId));
         const rows = await query;
         if (rows && rows.length > 0) {
           let list = rows.map((r) => ({
             id: r.id,
+            tenantId: r.tenantId,
             family: r.family as StatusFamily,
             code: r.code,
             label: r.label,
@@ -749,7 +775,8 @@ class StatusCatalogRepository {
     }
 
     // In-memory fallback
-    let list = [...this.items];
+    this.ensureTenantSeeded(tenantId);
+    let list = this.items.filter((i) => i.tenantId === tenantId);
     if (filter?.family) {
       list = list.filter((i) => i.family === filter.family);
     }
@@ -768,13 +795,17 @@ class StatusCatalogRepository {
     return list;
   }
 
-  async getById(id: number): Promise<StatusCatalogItem | null> {
+  async getById(id: number, tenantId: number = 1): Promise<StatusCatalogItem | null> {
     if (isDatabaseConfigured) {
       try {
-        const [row] = await db.select().from(schema.statusCatalog).where(eq(schema.statusCatalog.id, id));
+        const [row] = await db
+          .select()
+          .from(schema.statusCatalog)
+          .where(sql`${schema.statusCatalog.id} = ${id} AND ${schema.statusCatalog.tenantId} = ${tenantId}`);
         if (row) {
           return {
             id: row.id,
+            tenantId: row.tenantId,
             family: row.family as StatusFamily,
             code: row.code,
             label: row.label,
@@ -789,22 +820,29 @@ class StatusCatalogRepository {
       }
     }
 
-    const item = this.items.find((i) => i.id === id);
+    const item = this.items.find((i) => i.id === id && i.tenantId === tenantId);
     return item ? { ...item } : null;
   }
 
-  async getByFamilyAndCode(family: string, code: string): Promise<StatusCatalogItem | null> {
+  async getByFamilyAndCode(
+    family: string,
+    code: string,
+    tenantId: number = 1
+  ): Promise<StatusCatalogItem | null> {
     const normCode = code.trim().toUpperCase();
     if (isDatabaseConfigured) {
       try {
         const rows = await db
           .select()
           .from(schema.statusCatalog)
-          .where(sql`${schema.statusCatalog.family} = ${family} AND UPPER(${schema.statusCatalog.code}) = ${normCode}`);
+          .where(
+            sql`${schema.statusCatalog.tenantId} = ${tenantId} AND ${schema.statusCatalog.family} = ${family} AND UPPER(${schema.statusCatalog.code}) = ${normCode}`
+          );
         if (rows && rows.length > 0) {
           const row = rows[0];
           return {
             id: row.id,
+            tenantId: row.tenantId,
             family: row.family as StatusFamily,
             code: row.code,
             label: row.label,
@@ -819,19 +857,25 @@ class StatusCatalogRepository {
       }
     }
 
+    this.ensureTenantSeeded(tenantId);
     const item = this.items.find(
-      (i) => i.family === family && (i.code.toUpperCase() === normCode || i.label.toLowerCase() === code.trim().toLowerCase())
+      (i) =>
+        i.tenantId === tenantId &&
+        i.family === family &&
+        (i.code.toUpperCase() === normCode || i.label.toLowerCase() === code.trim().toLowerCase())
     );
     return item ? { ...item } : null;
   }
 
   async create(data: {
+    tenantId?: number;
     family: string;
     code: string;
     label: string;
     description?: string;
     active?: boolean;
   }): Promise<StatusCatalogItem> {
+    const tenantId = typeof data.tenantId === 'number' ? data.tenantId : 1;
     if (!STATUS_FAMILIES.includes(data.family as StatusFamily)) {
       throw new Error(`Família inválida: "${data.family}". Famílias permitidas: ${STATUS_FAMILIES.join(', ')}`);
     }
@@ -845,14 +889,15 @@ class StatusCatalogRepository {
       throw new Error('Label do status é obrigatório.');
     }
 
-    // Check duplicate within family
-    const existing = await this.getByFamilyAndCode(data.family, code);
+    // Check duplicate within tenant & family
+    const existing = await this.getByFamilyAndCode(data.family, code, tenantId);
     if (existing) {
-      throw new Error(`Código "${code}" já existe na família "${data.family}".`);
+      throw new Error(`Código "${code}" já existe na família "${data.family}" para este tenant.`);
     }
 
     const newItem: StatusCatalogItem = {
       id: this.nextId++,
+      tenantId,
       family: data.family as StatusFamily,
       code,
       label,
@@ -867,6 +912,7 @@ class StatusCatalogRepository {
         const [inserted] = await db
           .insert(schema.statusCatalog)
           .values({
+            tenantId: newItem.tenantId,
             family: newItem.family,
             code: newItem.code,
             label: newItem.label,
@@ -878,7 +924,7 @@ class StatusCatalogRepository {
           newItem.id = inserted.id;
         }
       } catch (err) {
-        console.warn('⚠️ statusCatalog db insert error:', (err as Error).message);
+        // Fallback
       }
     }
 
@@ -888,9 +934,20 @@ class StatusCatalogRepository {
 
   async update(
     id: number,
-    data: { label?: string; description?: string; active?: boolean }
+    tenantIdOrData: number | { label?: string; description?: string; active?: boolean },
+    maybeData?: { label?: string; description?: string; active?: boolean }
   ): Promise<StatusCatalogItem | null> {
-    const existing = await this.getById(id);
+    let tenantId = 1;
+    let data: { label?: string; description?: string; active?: boolean } = {};
+
+    if (typeof tenantIdOrData === 'number') {
+      tenantId = tenantIdOrData;
+      data = maybeData || {};
+    } else if (tenantIdOrData && typeof tenantIdOrData === 'object') {
+      data = tenantIdOrData;
+      tenantId = 1;
+    }
+    const existing = await this.getById(id, tenantId);
     if (!existing) {
       return null;
     }
@@ -914,13 +971,13 @@ class StatusCatalogRepository {
             active: updatedActive,
             updatedAt: new Date(),
           })
-          .where(eq(schema.statusCatalog.id, id));
+          .where(sql`${schema.statusCatalog.id} = ${id} AND ${schema.statusCatalog.tenantId} = ${tenantId}`);
       } catch (err) {
-        console.warn('⚠️ statusCatalog db update error:', (err as Error).message);
+        // Fallback
       }
     }
 
-    const memItem = this.items.find((i) => i.id === id);
+    const memItem = this.items.find((i) => i.id === id && i.tenantId === tenantId);
     if (memItem) {
       memItem.label = updatedLabel;
       memItem.description = updatedDescription;
@@ -938,15 +995,19 @@ class StatusCatalogRepository {
     };
   }
 
-  async deactivate(id: number): Promise<StatusCatalogItem | null> {
-    return this.update(id, { active: false });
+  async deactivate(id: number, tenantId: number = 1): Promise<StatusCatalogItem | null> {
+    return this.update(id, tenantId, { active: false });
   }
 
   /**
-   * Fail-closed check: verifies that status exists and is active for the given family.
+   * Fail-closed check: verifies that status exists and is active for the given family and tenant.
    * If not found, throws or returns error.
    */
-  async validateStatusOnWrite(family: string, statusIdentifier: string): Promise<{
+  async validateStatusOnWrite(
+    family: string,
+    statusIdentifier: string,
+    tenantId: number = 1
+  ): Promise<{
     valid: boolean;
     status?: StatusCatalogItem;
     error?: string;
@@ -966,7 +1027,7 @@ class StatusCatalogRepository {
     }
 
     const clean = statusIdentifier.trim();
-    const found = await this.getByFamilyAndCode(family, clean);
+    const found = await this.getByFamilyAndCode(family, clean, tenantId);
 
     if (!found) {
       return {
@@ -988,10 +1049,10 @@ class StatusCatalogRepository {
     };
   }
 
-  async getFamilyCounts(): Promise<
-    Record<StatusFamily, { total: number; active: number; expected: number }>
-  > {
-    const all = await this.getAll();
+  async getFamilyCounts(
+    tenantId: number = 1
+  ): Promise<Record<StatusFamily, { total: number; active: number; expected: number }>> {
+    const all = await this.getAll(tenantId);
     const expectedCounts: Record<StatusFamily, number> = {
       ProcessoDeContratacao: 13,
       ProcessosPresenciais: 17,
